@@ -75,7 +75,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V2.9"
+VERSION="V3.0"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -302,6 +302,24 @@ now_ms(){
         *) printf '%s' "$(( v * 1000 ))"; return 0 ;;
     esac
 }
+run_with_timeout(){
+    local secs="$1"; shift
+    local out_f pid killer rc
+    out_f="$(mktemp 2>/dev/null)" || out_f="/tmp/.sb_rwt.$$"
+    "$@" >"$out_f" 2>/dev/null &
+    pid=$!
+    ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+    killer=$!
+    wait "$pid" 2>/dev/null
+    rc=$?
+    kill "$killer" 2>/dev/null
+    wait "$killer" 2>/dev/null
+    cat "$out_f" 2>/dev/null
+    rm -f "$out_f" 2>/dev/null || true
+    [ "$rc" -eq 137 ] && return 124
+    return "$rc"
+}
+
 now_tz(){ date '+%Z'; }
 uptime_human(){
     if [ -r /proc/uptime ]; then
@@ -485,12 +503,12 @@ detect_udp_ok(){
     fi
 
     if [ -n "${BASH_VERSION:-}" ] && [ -e /dev/udp ]; then
-        if timeout 4 bash -c '
+        if run_with_timeout 4 bash -c '
             exec 3<>/dev/udp/1.1.1.1/53 || exit 1
             printf "\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x07example\x03com\x00\x00\x01\x00\x01" >&3
             IFS= read -r -n 1 -t 2 _ <&3 || exit 1
             exit 0
-        ' 2>/dev/null; then
+        ' >/dev/null 2>&1; then
             UDP_OK=1; UDP_HINT="UDP 出站可用（/dev/udp 探测收到回包）"; return 0
         fi
         UDP_OK=0; UDP_HINT="UDP 探测未通过：/dev/udp 无回包，很可能 UDP 被限制"; return 1
@@ -701,12 +719,11 @@ pick_sni_cached(){
     [ -s "$SNI_TESTED_FILE" ] && head -n1 "$SNI_TESTED_FILE" 2>/dev/null
 }
 probe_sni(){
-    local d="$1" out ms wrap=""
+    local d="$1" out ms
     command -v curl >/dev/null 2>&1 || { echo 9999; return; }
-    command -v timeout >/dev/null 2>&1 && wrap="timeout 8"
-    out="$($wrap curl -sS -I -o /dev/null \
+    out="$(run_with_timeout 5 curl -sS -I -o /dev/null \
             --connect-timeout 2 --max-time 3 \
-            -w '%{time_appconnect}' "https://${d}/" 2>/dev/null)"
+            -w '%{time_appconnect}' "https://${d}/")"
     case "$out" in
         ''|0|0.0|0.000000|*[!0-9.]*) echo 9999; return ;;
     esac
@@ -716,19 +733,29 @@ probe_sni(){
 }
 sni_optimize(){
     panel "TLS SNI 域名优选"
-    echo "  正在实测本地到各候选域名的 TLS 握手耗时（每个最多等 3 秒）..."
+    echo "  正在实测本地到各候选域名的 TLS 握手耗时（每个最多等 5 秒）..."
     echo
     command -v curl >/dev/null 2>&1 || { warn "缺少 curl，无法测速"; return 1; }
     local d ms best="" bestms=99999 line
     local results=""
+    local fail_streak=0
     for d in "${SNI_CANDIDATES[@]}"; do
         printf '  %-26s' "$d"
         ms="$(probe_sni "$d")"
         case "$ms" in ''|*[!0-9]*) ms=9999 ;; esac
         if [ "$ms" -ge 9999 ]; then
             printf '%s超时 / 不可达%s\n' "$DIM" "$RESET"
+            fail_streak=$((fail_streak + 1))
+            if [ "$fail_streak" -ge 3 ]; then
+                echo
+                warn "已连续 $fail_streak 个域名不可达，判定为本机 DNS 或出网异常，停止测速"
+                echo "  排查建议：cat /etc/resolv.conf 看 DNS 是否可用；"
+                echo "            ping -c2 1.1.1.1 看是否连外网都不通。"
+                return 1
+            fi
         else
             printf '%s%4d ms%s\n' "$GREEN" "$ms" "$RESET"
+            fail_streak=0
             results="${results}${ms} ${d}
 "
             if [ "$ms" -lt "$bestms" ]; then bestms="$ms"; best="$d"; fi
@@ -736,6 +763,8 @@ sni_optimize(){
     done
     if [ -z "$best" ]; then
         warn "全部候选域名均不可达（本机可能无法直连 443，或 DNS 异常）"
+        echo "  排查建议：cat /etc/resolv.conf 看 DNS 是否可用；"
+        echo "            ping -c2 1.1.1.1 看是否连外网都不通。"
         return 1
     fi
     echo
