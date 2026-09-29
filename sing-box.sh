@@ -69,12 +69,13 @@ BATCH_MODE=0; SB_RUN_MENU=0
 BATCH_RESERVE=16
 CURRENT_SNAPSHOT=""; FINGERPRINT="chrome"; UOT_ENABLED="0"
 PREFERRED_SNI=""; SNI_OPTIMIZED=""
+NODE_NAME_PREFIX=""
 SINGBOX_CHANNEL="any"
 DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V2.6"
+VERSION="V2.7"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -504,6 +505,7 @@ load_settings(){
     FINGERPRINT="${FINGERPRINT:-chrome}"
     UOT_ENABLED="${UOT_ENABLED:-0}"
     PREFERRED_SNI="${PREFERRED_SNI:-}"
+    NODE_NAME_PREFIX="${NODE_NAME_PREFIX:-}"
     case "${SINGBOX_CHANNEL:-any}" in
         stable|pre|any) : ;;
         *) SINGBOX_CHANNEL="any" ;;
@@ -526,6 +528,7 @@ MAX_UDP=$MAX_UDP
 FINGERPRINT=$FINGERPRINT
 UOT_ENABLED=$UOT_ENABLED
 PREFERRED_SNI=$PREFERRED_SNI
+NODE_NAME_PREFIX=$NODE_NAME_PREFIX
 SINGBOX_CHANNEL=$SINGBOX_CHANNEL
 SINGBOX_WANT_VERSION=$SINGBOX_WANT_VERSION
 DEFAULT_NEWEST_VERSION=$DEFAULT_NEWEST_VERSION
@@ -832,13 +835,50 @@ append_inbound(){
     fi
     jq --argjson x "$x" '.inbounds += [$x]' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
 }
+node_name_default(){
+    local label="$1" pre="${NODE_NAME_PREFIX:-}"
+    [ -n "$pre" ] || pre="${COUNTRY_NAME:-}"
+    if [ -n "$pre" ]; then printf '%s %s' "$pre" "$label"; else printf '%s' "$label"; fi
+}
+resolve_node_name(){
+    local label="$1" def
+    def="$(node_name_default "$label")"
+    if [ "${BATCH_MODE:-0}" = "1" ]; then printf '%s' "$def"; return 0; fi
+    local v=""
+    printf '  节点名称（回车用默认「%s」）： ' "$def" >&2
+    read -r v || v=""
+    printf '%s' "${v:-$def}"
+}
 add_node(){
-    local name="$1" type="$2" proto="$3" port="$4" uuidv="$5" pw="$6" sni="$7" extra="$8" pub="$9" sid="${10}"
-    jq --arg name "$name" --arg type "$type" --arg proto "$proto" --arg port "$port" \
+    local label="$1" type="$2" proto="$3" port="$4" uuidv="$5" pw="$6" sni="$7" extra="$8" pub="$9" sid="${10}"
+    local name
+    name="$(resolve_node_name "$label")"
+    jq --arg name "$name" --arg label "$label" --arg type "$type" --arg proto "$proto" --arg port "$port" \
        --arg uuid "$uuidv" --arg password "$pw" --arg sni "$sni" --arg extra "$extra" \
        --arg public_key "$pub" --arg short_id "$sid" \
-       '. + [{name:$name,type:$type,proto:$proto,port:($port|tonumber),uuid:$uuid,password:$password,sni:$sni,extra:$extra,public_key:$public_key,short_id:$short_id}]' \
+       '. + [{name:$name,label:$label,type:$type,proto:$proto,port:($port|tonumber),uuid:$uuid,password:$password,sni:$sni,extra:$extra,public_key:$public_key,short_id:$short_id}]' \
        "$NODES" > "$NODES.tmp" && mv "$NODES.tmp" "$NODES"
+}
+rename_nodes_default(){
+    local pre="${NODE_NAME_PREFIX:-${COUNTRY_NAME:-}}"
+    jq --arg pre "$pre" '
+      map( .label = (.label // .name)
+         | .name = (if ($pre|length) > 0 then ($pre + " " + .label) else .label end) )' \
+      "$NODES" > "$NODES.tmp" 2>/dev/null || { rm -f "$NODES.tmp"; return 1; }
+    [ -s "$NODES.tmp" ] || { rm -f "$NODES.tmp"; return 1; }
+    mv "$NODES.tmp" "$NODES" 2>/dev/null || { rm -f "$NODES.tmp"; return 1; }
+    return 0
+}
+rename_nodes_prefix(){
+    local pre="$1"
+    [ -n "$pre" ] || return 1
+    jq --arg pre "$pre" '
+      map( .label = (.label // .name)
+         | .name = ($pre + " " + .label) )' \
+      "$NODES" > "$NODES.tmp" 2>/dev/null || { rm -f "$NODES.tmp"; return 1; }
+    [ -s "$NODES.tmp" ] || { rm -f "$NODES.tmp"; return 1; }
+    mv "$NODES.tmp" "$NODES" 2>/dev/null || { rm -f "$NODES.tmp"; return 1; }
+    return 0
 }
 del_node_by_raw(){
     local raw="$1"
@@ -2135,10 +2175,24 @@ export_v2rayn(){
     b64 <"$plain" >"$SUBDIR/v2rayn_subscribe.txt"
 }
 
+export_shadowrocket(){
+    mkdir -p "$SUBDIR"
+    get_ip
+    local plain="$SUBDIR/shadowrocket_raw.txt"
+    : >"$plain"
+    local row link
+    while IFS= read -r row; do
+        link="$(link_for_node "$row" 2>/dev/null)" || link=""
+        [ -n "$link" ] && printf '%s\n' "$link" >>"$plain"
+    done < <(jq -c '.[]' "$NODES" 2>/dev/null)
+    b64 <"$plain" >"$SUBDIR/shadowrocket_subscribe.txt"
+}
+
 export_all(){
     get_ip
     export_clash
     export_v2rayn
+    export_shadowrocket
 }
 show_nodes(){
     get_ip
@@ -2309,6 +2363,7 @@ sub_prepare(){
     mkdir -p "$SUBDIR"
     export_clash    >/dev/null 2>&1 || true
     export_v2rayn   >/dev/null 2>&1 || true
+    export_shadowrocket >/dev/null 2>&1 || true
     export_singbox_json >/dev/null 2>&1 || true
 }
 
@@ -2331,7 +2386,7 @@ write_subserver(){
 #   - 其它路径一律 404，避免被扫描器发现
 #   - 可选 IP 白名单
 # 全部数据从磁盘文件读取，本进程不解析节点，逻辑极简、几乎不会出错。
-import os, sys, http.server, socketserver, base64, ipaddress
+import os, sys, re, http.server, socketserver, base64, ipaddress
 
 BASE     = r"${BASE}"
 SUBDIR   = r"${SUBDIR}"
@@ -2350,6 +2405,11 @@ CLASH  = lambda: readf(os.path.join(SUBDIR, "clash.yaml"))
 V2RAYN = lambda: readf(os.path.join(SUBDIR, "v2rayn_subscribe.txt"))
 RAW    = lambda: readf(os.path.join(SUBDIR, "v2rayn_raw.txt"))
 SBJSON = lambda: readf(os.path.join(SUBDIR, "singbox_client.json"))
+SROCKET = lambda: readf(os.path.join(SUBDIR, "shadowrocket_subscribe.txt"))
+
+# 只认标准链接、不认识 v2rayn:// 的客户端 UA。
+# 用词边界而不是简单子串，避免 "balloon" 这类词误命中 "loon"。
+STD_LINK_UA = re.compile(r"\b(shadowrocket|quantumult|loon|surge|surfboard|karing|hiddify|nekobox|nekoray)\b")
 
 class H(http.server.BaseHTTPRequestHandler):
     server_version = "singbox-nat-sub/1.0"
@@ -2391,8 +2451,13 @@ class H(http.server.BaseHTTPRequestHandler):
             body, ctype = CLASH(), "text/yaml; charset=utf-8"
         elif "sing-box" in ua or "singbox" in ua or "sfa" in ua or "sfi" in ua or "sfm" in ua:
             body, ctype = SBJSON(), "application/json; charset=utf-8"
+        elif STD_LINK_UA.search(ua):
+            # 这些客户端都**只认标准链接**，不认识 v2rayN 的 v2rayn:// 私有格式；
+            # 给它们 v2rayn 订阅会导致「只认出部分节点」。统一给纯标准链接。
+            body, ctype = SROCKET(), "text/plain; charset=utf-8"
         else:
-            # v2rayN / v2rayNG / Shadowrocket / Throne / 未知 → 统一给 base64 链接。
+            # v2rayN / v2rayNG / Throne / 未知 → 统一给 base64 链接
+            # （含 v2rayn://，由 v2rayN 自动切 sing-box 内核）。
             body, ctype = V2RAYN(), "text/plain; charset=utf-8"
 
         if not body:
@@ -2646,6 +2711,7 @@ map \$http_user_agent \$sb_sub_file {
     default                            "v2rayn_subscribe.txt";
     "~*(clash|mihomo|verge|stash)"     "clash.yaml";
     "~*(sing-box|singbox|sfa|sfi|sfm)" "singbox_client.json";
+    "~*\\b(shadowrocket|quantumult|loon|surge|surfboard|karing|hiddify|nekobox|nekoray)\\b" "shadowrocket_subscribe.txt";
 }
 server {
     listen      ${port};
@@ -3034,7 +3100,7 @@ subhttp_menu(){
         if [ "$st" = "on" ]; then
             echo "  ${BOLD}订阅 URL —— 客户端里粘贴这一个即可${RESET}"
             echo "  ${CYAN}$(sub_url)${RESET}"
-            echo "  ${DIM}按客户端 User-Agent 自动适配：Clash→YAML / v2rayN→base64 / sing-box→JSON${RESET}"
+            echo "  ${DIM}按客户端 UA 自动适配：Clash→YAML / v2rayN→base64 / sing-box→JSON / 小火箭→标准链接${RESET}"
         else
             echo "  ${DIM}当前未运行：选 1 启动后，这里会出现可复制的订阅地址${RESET}"
         fi
@@ -3515,11 +3581,18 @@ client_menu(){
     else
         kv "UDP over TCP" "${DIM}已关闭${RESET}"
     fi
+    local _nm_pre="${NODE_NAME_PREFIX:-${COUNTRY_NAME:-}}"
+    if [ -n "$_nm_pre" ]; then
+        kv "节点命名" "${_nm_pre} <协议类型>"
+    else
+        kv "节点命名" "${DIM}<协议类型>（未探测到国家）${RESET}"
+    fi
     hr
     echo "  1. 修改 uTLS 指纹（Reality / Clash 伪装）"
     echo "  2. 切换 UDP over TCP（UoT）"
     echo "  3. SNI 域名优选（实测 TLS 握手，自动选最快的）"
     echo "  4. 手动指定默认 SNI 域名"
+    echo "  5. 节点命名（默认 国家/地区 + 协议类型，可自定义前缀）"
     echo "  0. 返回"
     read -r -p "请选择： " c || c=""
     case "$c" in
@@ -3611,6 +3684,41 @@ client_menu(){
         else
             warn "域名格式不合法"
         fi
+        pause ;;
+      5)
+        echo
+        echo "${BOLD}节点命名规则${RESET}"
+        echo "  新建节点时的名字 =「前缀 + 协议类型」，例如："
+        echo "    ${CYAN}中国香港 VLESS + Reality${RESET}  /  ${CYAN}中国香港 Hysteria2${RESET}"
+        echo
+        echo "  当前国家/地区：${BOLD}${COUNTRY_NAME:-未探测到}${RESET}"
+        echo "  当前自定义前缀：${BOLD}${NODE_NAME_PREFIX:-（未设置，用国家/地区名）}${RESET}"
+        echo
+        echo "  1. 设置自定义前缀（如 HK-01 / 香港01 / Tokyo）"
+        echo "  2. 清空前缀，改用国家/地区名"
+        echo "  3. 立即把已有节点按当前规则重命名"
+        echo "  0. 返回"
+        read -r -p "请选择： " nn || nn=""
+        case "$nn" in
+          1)
+            read -r -p "  输入前缀（直接回车取消）： " _np || _np=""
+            if [ -n "$_np" ]; then
+              NODE_NAME_PREFIX="$_np"; save_settings
+              ok "前缀已设为：$_np（新建节点时生效）"
+            else
+              info "已取消"
+            fi ;;
+          2) NODE_NAME_PREFIX=""; save_settings; ok "已改为使用国家/地区名" ;;
+          3)
+            if rename_nodes_default; then
+              export_all >/dev/null 2>&1
+              ok "已按当前规则重命名全部节点，订阅已刷新"
+            else
+              warn "重命名失败"
+            fi ;;
+          0) continue ;;
+          *) warn "无效选项"; sleep 1; continue ;;
+        esac
         pause ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
@@ -3764,9 +3872,48 @@ manage_nodes(){
     echo "4. 一键复制全部节点"
     echo "5. 显示二维码（单个 / 全部）"
     echo "6. 修改节点端口"
+    echo "7. 重命名节点（按国家+协议 / 加前缀 / 单个改名）"
     echo "0. 返回"
     read -r -p "请选择： " c || c=""
     case "$c" in
+      7)
+        echo
+        echo "  当前命名规则：${BOLD}${NODE_NAME_PREFIX:-${COUNTRY_NAME:-（未探测到国家）}} <协议类型>${RESET}"
+        echo
+        echo "1. 全部按「国家/地区 + 协议类型」重命名"
+        echo "2. 全部加统一前缀"
+        echo "3. 单个节点改名"
+        echo "0. 返回"
+        read -r -p "请选择： " rn || rn=""
+        case "$rn" in
+          1)
+            if rename_nodes_default; then
+              export_all >/dev/null 2>&1; ok "已按「国家/地区 + 协议类型」重命名"
+            else warn "重命名失败"; fi
+            pause ;;
+          2)
+            read -r -p "  输入前缀（直接回车取消）： " _p || _p=""
+            if [ -z "$_p" ]; then info "已取消"; pause; continue; fi
+            if rename_nodes_prefix "$_p"; then
+              export_all >/dev/null 2>&1; ok "已为全部节点加上前缀：$_p"
+            else warn "重命名失败"; fi
+            pause ;;
+          3)
+            jq -r 'to_entries[] | "\(.key+1). \(.value.name)"' "$NODES"
+            read -r -p "输入编号： " _n || _n=""
+            [[ "$_n" =~ ^[0-9]+$ ]] || { warn "无效"; pause; continue; }
+            local _i=$((_n-1)) _cnt
+            _cnt="$(jq 'length' "$NODES")"
+            [ "$_i" -ge 0 ] && [ "$_i" -lt "$_cnt" ] || { warn "节点编号不存在"; pause; continue; }
+            read -r -p "新名称： " _new || _new=""
+            if [ -z "$_new" ]; then info "已取消"; pause; continue; fi
+            jq --argjson i "$_i" --arg nm "$_new" '.[$i].name = $nm' \
+                "$NODES" > "$NODES.tmp" 2>/dev/null && mv "$NODES.tmp" "$NODES" || { rm -f "$NODES.tmp"; warn "改名失败"; pause; continue; }
+            export_all >/dev/null 2>&1; ok "已改名为：$_new"
+            pause ;;
+          0) continue ;;
+          *) warn "无效"; sleep 1 ;;
+        esac ;;
       6) clear; change_node_port; pause; continue ;;
       1)
         jq -r 'to_entries[] | "\(.key+1). \(.value.name) : \(.value.proto) \(.value.port)"' "$NODES"
@@ -4012,8 +4159,9 @@ sub_menu(){
     echo "2. 显示二维码（单个 / 全部）"
     echo "3. 查看 / 复制 Clash 配置（含 mihomo）"
     echo "4. 查看 / 复制 v2rayN 订阅（自动指定 sing-box 内核）"
-    echo "5. 查看 sing-box 配置"
-    echo "6. 订阅服务（开启后一个 URL 走天下，按客户端自动适配格式）"
+    echo "5. 查看 / 复制 小火箭订阅（纯标准链接，识别率最高）"
+    echo "6. 查看 sing-box 配置"
+    echo "7. 订阅服务（开启后一个 URL 走天下，按客户端自动适配格式）"
     echo "0. 返回"
     read -r -p "请选择： " x || x=""
     case "$x" in
@@ -4021,8 +4169,9 @@ sub_menu(){
       2) qr_menu ;;
       3) clash_sub_menu ;;
       4) v2rayn_sub_menu ;;
-      5) cat "$CONF"; pause ;;
-      6) subhttp_menu ;;
+      5) shadowrocket_sub_menu ;;
+      6) cat "$CONF"; pause ;;
+      7) subhttp_menu ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
@@ -4054,6 +4203,40 @@ v2rayn_sub_menu(){
         export_v2rayn >/dev/null 2>&1
         if [ ! -s "$SUBDIR/v2rayn_subscribe.txt" ]; then warn "暂无节点"; pause; continue; fi
         copy_text "$(cat "$SUBDIR/v2rayn_subscribe.txt")"
+        pause ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+shadowrocket_sub_menu(){
+  while :; do
+    echo
+    echo "1. 查看单条链接（纯标准格式）"
+    echo "2. 查看订阅原文（base64）"
+    echo "3. 复制订阅到剪贴板"
+    echo "0. 返回"
+    read -r -p "请选择： " q || q=""
+    case "$q" in
+      1)
+        export_shadowrocket >/dev/null 2>&1
+        if [ ! -s "$SUBDIR/shadowrocket_raw.txt" ]; then warn "暂无节点"; pause; continue; fi
+        echo
+        info "以下为标准链接，小火箭可直接逐条导入："
+        cat "$SUBDIR/shadowrocket_raw.txt"
+        pause ;;
+      2)
+        export_shadowrocket >/dev/null 2>&1
+        if [ ! -s "$SUBDIR/shadowrocket_subscribe.txt" ]; then warn "暂无节点"; pause; continue; fi
+        echo
+        info "下面整段复制，在小火箭「添加订阅」里粘贴："
+        echo
+        cat "$SUBDIR/shadowrocket_subscribe.txt"; echo
+        pause ;;
+      3)
+        export_shadowrocket >/dev/null 2>&1
+        if [ ! -s "$SUBDIR/shadowrocket_subscribe.txt" ]; then warn "暂无节点"; pause; continue; fi
+        copy_text "$(cat "$SUBDIR/shadowrocket_subscribe.txt")"
         pause ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
