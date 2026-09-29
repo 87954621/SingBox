@@ -74,7 +74,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V2.2"
+VERSION="V2.3"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -314,6 +314,20 @@ detect_arch(){
         i386|i686) ARCH="386" ;;
         *) die "不支持 CPU 架构：$(uname -m)" ;;
     esac
+}
+
+libc_kind(){
+    case "${OS:-}" in
+        alpine) printf 'musl'; return 0 ;;
+    esac
+    if ls /lib/ld-musl-*.so.1 >/dev/null 2>&1; then printf 'musl'; return 0; fi
+    if command -v ldd >/dev/null 2>&1 && ldd /bin/sh 2>&1 | grep -qi musl; then
+        printf 'musl'; return 0
+    fi
+    if ls /lib64/ld-linux*.so.* /lib/ld-linux*.so.* >/dev/null 2>&1; then
+        printf 'glibc'; return 0
+    fi
+    printf ''
 }
 
 install_deps(){
@@ -1565,7 +1579,14 @@ upgrade_singbox(){
         fi
     else
         warn "校验 / 启动失败，正在回滚内核与配置"
-        [ -x "$bak" ] && mv -f "$bak" "$BIN" 2>/dev/null || true
+        if [ -x "$bak" ]; then
+            mv -f "$bak" "$BIN" 2>/dev/null || true
+        else
+            warn "未找到旧内核备份（$bak），请手动重装内核"
+        fi
+        if [ -n "$cur" ]; then printf '%s\n' "$cur" > "$VERSION_FILE" 2>/dev/null || true; fi
+        rm -f "$BASE/.sbver.cache" 2>/dev/null || true
+        SB_VERSION_CACHE=""
         rollback
         apply >/dev/null 2>&1 || true
         warn "已回滚到 ${cur:-原版本}"
@@ -4327,11 +4348,45 @@ initial_install(){
     info "订阅服务默认未开启：需要时到「订阅与节点链接 → 订阅服务」自行选择实现方式并启动"
 }
 
+is_musl(){
+    [ "$(libc_kind)" = musl ]
+}
+_asset_suffixes_json(){
+    local base="linux-${ARCH}" s first=1
+    local -a list
+    if is_musl; then
+        list=("${base}-musl" "${base}-glibc" "$base")
+    else
+        list=("${base}-glibc" "$base" "${base}-musl")
+    fi
+    printf '['
+    for s in "${list[@]}"; do
+        [ "$first" = 1 ] || printf ','
+        first=0
+        printf '"%s"' "$s"
+    done
+    printf ']'
+}
+_alt_variant_urls(){
+    local url="$1" head_ prefix s
+    head_="${url%/*}"
+    prefix="${url##*/}"
+    prefix="${prefix%.tar.gz}"
+    case "$prefix" in
+        *-musl)  prefix="${prefix%-musl}" ;;
+        *-glibc) prefix="${prefix%-glibc}" ;;
+    esac
+    local -a order
+    if is_musl; then order=(-musl -glibc ""); else order=(-glibc "" -musl); fi
+    for s in "${order[@]}"; do
+        printf '%s\n' "${head_}/${prefix}${s}.tar.gz"
+    done
+}
 fetch_singbox_release(){
     local api="https://api.github.com/repos/SagerNet/sing-box/releases?per_page=50"
     local json
     json="$(curl -fsSL --max-time 30 "$api" 2>/dev/null)" || return 1
-    printf '%s' "$json" | jq -r --arg a "linux-${ARCH}" --arg ch "${SINGBOX_CHANNEL:-any}" '
+    printf '%s' "$json" | jq -r --argjson sufs "$(_asset_suffixes_json)" --arg ch "${SINGBOX_CHANNEL:-any}" '
       def want: if $ch == "stable" then (.prerelease == false)
                 elif $ch == "pre" then (.prerelease == true)
                 else true end;
@@ -4345,14 +4400,15 @@ fetch_singbox_release(){
         else 0 end;
       def pnumof: ( restof | [ scan("[0-9]+") ] | map(tonumber)
                     | if length > 0 then .[-1] else 0 end );
+      def pick: [ $sufs[] as $s | .assets[]? | select(.name == ($s + ".tar.gz")) | .browser_download_url ];
       [ .[]
         | select(want)
-        | select((.assets | map(.name) | any(endswith($a + ".tar.gz"))))
+        | select((pick | length) > 0)
         | { tag: .tag_name,
             ver: verof,
             tier: tierof,
             pnum: pnumof,
-            url: ( .assets[] | select(.name | endswith($a + ".tar.gz")) | .browser_download_url ) }
+            url: ( pick[0] ) }
       ]
       | sort_by([ (.ver | split(".") | map(tonumber? // 0)), .tier, .pnum ])
       | last
@@ -4367,18 +4423,27 @@ _channel_label(){
     esac
 }
 fetch_singbox_version(){
-    local want="$1" tag url
+    local want="$1" tag url json s
     want="$(printf '%s' "$want" | tr -d '[:space:]' | sed 's/^v//')"
     [ -n "$want" ] || return 1
     tag="v${want}"
-    url="https://github.com/SagerNet/sing-box/releases/download/${tag}/sing-box-${want}-linux-${ARCH}.tar.gz"
+    json="$(curl -fsSL --max-time 20 "https://api.github.com/repos/SagerNet/sing-box/releases/tags/${tag}" 2>/dev/null)"
+    if [ -n "$json" ]; then
+        url="$(printf '%s' "$json" | jq -r --argjson sufs "$(_asset_suffixes_json)" \
+            '[ $sufs[] as $s | .assets[]? | select(.name == ($s + ".tar.gz")) | .browser_download_url ][0] // empty' 2>/dev/null)"
+    fi
+    if [ -z "${url:-}" ]; then
+        s="linux-${ARCH}"
+        is_musl && s="linux-${ARCH}-musl"
+        url="https://github.com/SagerNet/sing-box/releases/download/${tag}/sing-box-${want}-${s}.tar.gz"
+    fi
     printf '%s\t%s\n' "$tag" "$url"
 }
 list_singbox_versions(){
     local api="https://api.github.com/repos/SagerNet/sing-box/releases?per_page=50"
     local json
     json="$(curl -fsSL --max-time 30 "$api" 2>/dev/null)" || return 1
-    printf '%s' "$json" | jq -r --arg a "linux-${ARCH}" '
+    printf '%s' "$json" | jq -r --argjson sufs "$(_asset_suffixes_json)" '
       def restof: ( .tag_name | sub("^v";"") | split("-")[1:] | join("-") | ascii_downcase );
       def tierof:
         if (.prerelease | not) then 4
@@ -4388,8 +4453,9 @@ list_singbox_versions(){
         else 0 end;
       def pnumof: ( restof | [ scan("[0-9]+") ] | map(tonumber)
                     | if length > 0 then .[-1] else 0 end );
+      def pick: [ $sufs[] as $s | .assets[]? | select(.name == ($s + ".tar.gz")) ];
       [ .[]
-        | select((.assets | map(.name) | any(endswith($a + ".tar.gz"))))
+        | select((pick | length) > 0)
         | { tag: .tag_name, pre: .prerelease, tier: tierof, pnum: pnumof,
             ver: ( .tag_name | sub("^v";"") | split("-")[0] ) }
       ]
@@ -4428,25 +4494,56 @@ download_singbox(){
         json="$(curl -fsSL --max-time 30 "$api")" || { warn "无法访问 GitHub API"; return 1; }
         tag="$(jq -r '.tag_name // empty' <<<"$json")"
         [ -n "$tag" ] || { warn "无法获取 sing-box 版本"; return 1; }
-        url="$(jq -r --arg a "linux-${ARCH}" '.assets[] | select(.name | endswith($a+".tar.gz")) | .browser_download_url' <<<"$json" | head -n1)"
+        url="$(jq -r --argjson sufs "$(_asset_suffixes_json)" '[ $sufs[] as $s | .assets[]? | select(.name == ($s + ".tar.gz")) | .browser_download_url ][0] // empty' <<<"$json")"
     fi
     [ -n "$url" ] || { warn "找不到 linux-${ARCH} 的发行包（该版本可能没有此架构）"; return 1; }
-    tmp="$(mktemp -d)" || { warn "无法创建临时目录"; return 1; }
-    if ! curl -fL --retry 3 "$url" -o "$tmp/sing-box.tar.gz"; then
-        rm -rf "$tmp"; warn "下载失败：$url"; return 1
-    fi
-    if ! tar -xzf "$tmp/sing-box.tar.gz" -C "$tmp" 2>/dev/null; then
-        rm -rf "$tmp"; warn "解压失败（文件可能不完整）"; return 1
-    fi
-    found="$(find "$tmp" -type f -name sing-box | head -n1)"
-    if [ -z "$found" ]; then
-        rm -rf "$tmp"; warn "压缩包里没有找到 sing-box 可执行文件"; return 1
-    fi
-    install -m 0755 "$found" "$BIN" || { rm -rf "$tmp"; warn "写入 $BIN 失败"; return 1; }
-    printf '%s\n' "$tag" > "$VERSION_FILE"
-    rm -rf "$tmp"
-    info "已安装 sing-box ${tag}"
-    return 0
+
+    local -a _cands=("$url")
+    local _alt
+    for _alt in $(_alt_variant_urls "$url"); do
+        [ -n "$_alt" ] || continue
+        [ "$_alt" = "$url" ] && continue
+        _cands+=("$_alt")
+    done
+
+    local _u _tried=0 _last=""
+    local _lc="glibc"; is_musl && _lc="musl"
+    for _u in "${_cands[@]}"; do
+        [ -n "$_u" ] || continue
+        _tried=$((_tried + 1))
+        tmp="$(mktemp -d)" || { warn "无法创建临时目录"; return 1; }
+        if ! curl -fL --retry 3 "$_u" -o "$tmp/sing-box.tar.gz" 2>/dev/null; then
+            rm -rf "$tmp"; _last="下载失败：$(basename "$_u")"; continue
+        fi
+        if ! tar -xzf "$tmp/sing-box.tar.gz" -C "$tmp" 2>/dev/null; then
+            rm -rf "$tmp"; _last="解压失败（文件可能不完整）"; continue
+        fi
+        found="$(find "$tmp" -type f -name sing-box | head -n1)"
+        if [ -z "$found" ]; then
+            rm -rf "$tmp"; _last="压缩包里没有找到 sing-box 可执行文件"; continue
+        fi
+        if ! install -m 0755 "$found" "${BIN}.new" 2>/dev/null; then
+            rm -rf "$tmp"; rm -f "${BIN}.new"; _last="写入 ${BIN} 失败"; continue
+        fi
+        rm -rf "$tmp"
+        if ! "${BIN}.new" version >/dev/null 2>&1; then
+            rm -f "${BIN}.new"
+            _last="该构建在本机无法执行（本机 libc：${_lc}）"
+            info "该变体在本机跑不起来，换下一个变体重试 ..."
+            continue
+        fi
+        if ! mv -f "${BIN}.new" "$BIN" 2>/dev/null; then
+            rm -f "${BIN}.new"; _last="替换 ${BIN} 失败"; continue
+        fi
+        printf '%s\n' "$tag" > "$VERSION_FILE"
+        rm -f "$BASE/.sbver.cache" 2>/dev/null || true
+        SB_VERSION_CACHE=""
+        info "已安装 sing-box ${tag}"
+        return 0
+    done
+    rm -f "${BIN}.new" 2>/dev/null || true
+    warn "${_last:-下载安装失败}（已尝试 ${_tried} 个构建变体）"
+    return 1
 }
 write_self_menu(){
     local src="${1:-${BASH_SOURCE[0]:-$0}}"
