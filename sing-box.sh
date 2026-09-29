@@ -74,7 +74,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V2.4"
+VERSION="V2.5"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -158,6 +158,11 @@ kv(){
     w="$(dwidth "$k")"
     pad=$((10-w)); [ "$pad" -lt 0 ] && pad=0
     printf '  %s%s%s%*s %s%s%s\n' "$DIM" "$k" "$RESET" "$pad" "" "$color" "$v" "$RESET"
+}
+kv_dash(){
+    local k="$1" v="$2" suffix="${3:-}"
+    if [ -n "$v" ]; then kv "$k" "${v}${suffix}"
+    else kv "$k" "${DIM}—${RESET}"; fi
 }
 kvf(){
     local indent="$1" k="$2" v="$3"
@@ -4176,6 +4181,27 @@ menu(){
   done
 }
 
+_proc_count(){
+    local n="" out
+    if command -v pgrep >/dev/null 2>&1; then
+        n="$(pgrep -x "$1" 2>/dev/null | wc -l | tr -d ' ')"
+    else
+        out="$(ps -e -o comm 2>/dev/null)"
+        [ -n "$out" ] || return 0
+        n="$(printf '%s\n' "$out" | grep -cx -- "$1" 2>/dev/null)"
+    fi
+    case "$n" in ''|*[!0-9]*) return 0 ;; esac
+    printf '%s' "$n"
+}
+_sys_proc_total(){
+    local out n
+    out="$(ps -e -o pid 2>/dev/null)"
+    [ -n "$out" ] || return 0
+    n="$(printf '%s\n' "$out" | grep -c '[0-9]' 2>/dev/null)"
+    case "$n" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$n" -gt 0 ] || return 0
+    printf '%s' "$n"
+}
 system_info(){
     detect_network
     panel "系统信息"
@@ -4187,13 +4213,20 @@ system_info(){
     IFS='|' read -r s_st s_upt s_mem s_pid s_ver s_en s_cpu <<<"$s_sum"
     kv "服务状态" "$(status_line "$alive" "$s_sum" "$ncnt")" \
        "$([ "$alive" = 1 ] && echo "$GREEN" || echo "$RED")"
-    if [ "$alive" = 1 ]; then
-        [ -n "$s_cpu" ] && kv "CPU 占用" "${s_cpu}%"
-        [ -n "$s_mem" ] && kv "内存占用" "$s_mem"
-        [ -n "$s_upt" ] && kv "已运行" "$s_upt"
-    fi
+    kv_dash "CPU 占用" "$s_cpu" "%"
+    kv_dash "内存占用" "$s_mem"
+    kv_dash "已运行" "$s_upt"
     [ -n "$s_ver" ] && kv "内核版本" "sing-box $s_ver"
     [ -n "$s_pid" ] && kv "主进程" "PID $s_pid"
+    local _pc_sb _pc_ng _pc_all
+    _pc_sb="$(_proc_count sing-box)"; [ -n "$_pc_sb" ] || _pc_sb="${DIM}—${RESET}"
+    if nginx_available; then
+        _pc_ng="$(_proc_count nginx)"; [ -n "$_pc_ng" ] || _pc_ng="${DIM}—${RESET}"
+    else
+        _pc_ng="${DIM}未装${RESET}"
+    fi
+    _pc_all="$(_sys_proc_total)"; [ -n "$_pc_all" ] || _pc_all="${DIM}—${RESET}"
+    kv "进程数量" "sing-box ${_pc_sb}   nginx ${_pc_ng}   系统 ${_pc_all}"
     hr
     kv "系统" "$OS $VER"
     kv "架构" "$(uname -m) -> $ARCH"
