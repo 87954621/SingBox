@@ -74,7 +74,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V2.5"
+VERSION="V2.6"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -90,7 +90,9 @@ SUBHTTP_PY="${BASE}/subserver.py"
 SUBHTTP_TOKEN="${BASE}/.sub_token"
 SUBHTTP_PORT="${BASE}/.sub_port"
 SUBHTTP_SVC="singbox-nat-sub"
-NGINX_CONF="/etc/nginx/conf.d/singbox-nat-sub.conf"
+NGINX_SITE_NAME="singbox-nat-sub.conf"
+NGINX_CONF=""
+NGINX_CONF_LEGACY="/etc/nginx/conf.d/${NGINX_SITE_NAME}"
 MENU="${BASE}/menu.sh"
 
 UPDATE_URL="https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh"
@@ -309,6 +311,8 @@ detect_os(){
     if command -v systemctl >/dev/null 2>&1; then INIT="systemd"
     elif command -v rc-service >/dev/null 2>&1; then INIT="openrc"
     else INIT="none"; fi
+    detect_nginx_dir
+    cleanup_legacy_nginx_conf
 }
 detect_arch(){
     case "$(uname -m)" in
@@ -2485,6 +2489,47 @@ EOF
     return 0
 }
 
+_nginx_http_include_dir(){
+    local conf="/etc/nginx/nginx.conf"
+    [ -r "$conf" ] || return 0
+    awk '
+        /^[ \t]*#/ { next }
+        {
+            line = $0
+            sub(/#.*/, "", line)
+            n = gsub(/\{/, "{", line)
+            m = gsub(/\}/, "}", line)
+            if (depth >= 1 && line ~ /include[ \t]+[^;]*\/\*\.conf[ \t]*;/) {
+                s = line
+                sub(/^.*include[ \t]+/, "", s)
+                sub(/[ \t]*;.*$/, "", s)
+                sub(/\/\*\.conf$/, "", s)
+                print s
+                exit
+            }
+            depth += n - m
+        }
+    ' "$conf" 2>/dev/null
+}
+
+detect_nginx_dir(){
+    local d
+    d="$(_nginx_http_include_dir)"
+    if [ -z "$d" ]; then
+        if [ -d /etc/nginx/http.d ]; then d="/etc/nginx/http.d"
+        elif [ -d /etc/nginx/conf.d ]; then d="/etc/nginx/conf.d"
+        else d="/etc/nginx/conf.d"; fi
+    fi
+    NGINX_CONF="${d%/}/${NGINX_SITE_NAME}"
+}
+
+cleanup_legacy_nginx_conf(){
+    [ -n "$NGINX_CONF" ] || detect_nginx_dir
+    [ "$NGINX_CONF_LEGACY" = "$NGINX_CONF" ] && return 0
+    [ -f "$NGINX_CONF_LEGACY" ] || return 0
+    rm -f "$NGINX_CONF_LEGACY" 2>/dev/null || true
+}
+
 nginx_available(){
     local p
     p="$(command -v nginx 2>/dev/null)"
@@ -2575,6 +2620,7 @@ nginx_reload(){
 
 write_nginx_conf(){
     need_root
+    [ -n "$NGINX_CONF" ] || detect_nginx_dir
     local tok port ngxconf="$NGINX_CONF"
     tok="$(sub_token)"; port="${SUBHTTP_LISTEN:-8088}"
     mkdir -p "$SUBDIR"
@@ -2586,7 +2632,12 @@ write_nginx_conf(){
         done
         allowdeny="${allowdeny}    deny all;"$'\n'
     fi
+    local v6listen=""
+    [ -f /proc/net/if_inet6 ] && v6listen="    listen      [::]:${port};"
     mkdir -p "$(dirname "$ngxconf")"
+    if [ "$NGINX_CONF_LEGACY" != "$ngxconf" ]; then
+        rm -f "$NGINX_CONF_LEGACY" 2>/dev/null || true
+    fi
     cat > "$ngxconf" <<EOF
 # sing-box NAT 订阅服务（由管理脚本生成，请勿手改）
 # 用 nginx 的 map 指令按 User-Agent 选文件，再用扩展名定 Content-Type；
@@ -2598,7 +2649,7 @@ map \$http_user_agent \$sb_sub_file {
 }
 server {
     listen      ${port};
-    listen      [::]:${port};
+${v6listen}
 ${allowdeny}
     # 仅匹配带正确 token 的路径；其它一律 404，避免被扫描发现。
     location = /sub/${tok} {
@@ -2780,7 +2831,7 @@ _sub_start_python(){
         info "可继续用「一键复制全部链接」或二维码导入"
         return 1
     fi
-    rm -f "$NGINX_CONF" 2>/dev/null || true
+    rm -f "$NGINX_CONF" "$NGINX_CONF_LEGACY" 2>/dev/null || true
     progress 30 "生成订阅内容"
     sub_prepare
     progress 50 "写入服务脚本"
@@ -2831,7 +2882,7 @@ sub_port_hint(){
 
 sub_stop(){
     need_root
-    rm -f "$NGINX_CONF" 2>/dev/null || true
+    rm -f "$NGINX_CONF" "$NGINX_CONF_LEGACY" 2>/dev/null || true
     if nginx_available; then
         nginx -t >/dev/null 2>&1 && nginx_reload >/dev/null 2>&1 || true
     fi
@@ -2855,7 +2906,7 @@ sub_uninstall_backend(){
     if nginx_available; then
         echo "  检测到本机已安装 nginx（曾被用于订阅服务）。"
         echo "  ${YELLOW}⚠ 警告：卸载 nginx 软件包会移除整个 nginx，包括你自建的其它站点与配置！${RESET}"
-        echo "  ${DIM}本脚本只为订阅新增了一份站点配置：/etc/nginx/conf.d/singbox-nat-sub.conf（已在上一步删除）。${RESET}"
+        echo "  ${DIM}本脚本只为订阅新增了一份站点配置：${NGINX_CONF}（已在上一步删除）。${RESET}"
         read -r -p "  确认卸载 nginx 软件包？[y/N]： " c || c=""
         case "$c" in
           [Yy])
@@ -4272,7 +4323,7 @@ uninstall(){
     pkill -f "$BIN run -c $CONF" 2>/dev/null || true
 
     progress 30 "清理订阅服务残留"
-    rm -f "$NGINX_CONF" 2>/dev/null || true
+    rm -f "$NGINX_CONF" "$NGINX_CONF_LEGACY" 2>/dev/null || true
     if nginx_available; then
         nginx -t >/dev/null 2>&1 && nginx_reload >/dev/null 2>&1 || true
     fi
