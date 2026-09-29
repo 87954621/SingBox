@@ -1,6 +1,6 @@
 # Sing-box NAT 多协议管理脚本
 
-一个 Bash 单文件脚本，在 Linux 服务器（NAT 机器 / VPS / 云服务器）上部署和管理 sing-box 的 **16 种代理协议**，带菜单界面、节点管理、二维码，以及**订阅服务**——让 v2rayN / Clash(mihomo) / sing-box 等客户端通过**一个订阅链接**直接导入全部节点。
+一个 Bash 单文件脚本，在 Linux 服务器（NAT 机器 / VPS / 云服务器）上部署和管理 sing-box 的 **16 种代理协议**，带菜单界面、节点管理、二维码，以及**订阅服务**——让 v2rayN / Clash(mihomo) / sing-box / 小火箭(Shadowrocket) 等客户端通过**一个订阅链接**直接导入全部节点。
 
 
 
@@ -15,7 +15,6 @@
 ```bash
 bash sing-box.sh
 ```
-
 # 方式二：curl 一键安装（把 <脚本下载地址> 换成你的实际地址）
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh)
@@ -40,10 +39,10 @@ sb help           # 帮助
 ```
  1. 节点部署                  单个协议交互式部署
  2. 批量部署                  多选 / all，一次装多个协议
- 3. 节点管理                  查看、改端口、看链接、扫码、删除
+ 3. 节点管理                  查看、改端口、看链接、扫码、重命名、清理孤儿入站、删除
  4. 端口范围 / 默认端口
  5. 网络检测 / UDP 模式
- 6. 客户端设置                uTLS 指纹 / UoT / SNI
+ 6. 客户端设置                uTLS 指纹 / UoT / SNI / 节点命名
  7. 服务管理                  启停、重启、配置检查
  8. sing-box 管理             内核版本、升级、重装（不碰配置和节点）
  9. 订阅与节点链接            一个 URL 适配所有客户端
@@ -95,6 +94,32 @@ sb help           # 帮助
 
 ---
 
+## 节点命名
+
+新建节点时，名字默认是 **`<国家/地区> <协议类型>`**，例如：
+
+```
+中国香港 VLESS + Reality
+中国香港 Hysteria2
+日本 Shadowsocks 2022
+```
+
+- **国家/地区**由脚本探测本机公网 IP 自动得出（离线或探测失败时只留协议类型）；
+- **单个节点部署**时，脚本会在最后多问一句「节点名称」，直接回车即用默认名，也可以当场改成任意名字；
+- **批量部署**不打断流程，统一用默认名（部署完可在「3. 节点管理 → 7. 重命名节点」里批量改）。
+
+想换个前缀？**主菜单 6（客户端设置）→ 5. 节点命名**：
+
+| 选项 | 说明 |
+|---|---|
+| 设置自定义前缀 | 例如 `HK-01` / `东京`，之后新建节点名字变成 `HK-01 VLESS + Reality` |
+| 清空前缀 | 改回用国家/地区名 |
+| 按当前规则重命名已有节点 | 立刻把已部署的节点名统一刷新，并重新生成订阅 |
+
+「节点管理 → 7. 重命名节点」还支持**全部加统一前缀**和**单个节点改名**。改名只影响订阅里显示的名字，不动端口和密钥。
+
+---
+
 ## 订阅：一个 URL 走天下
 
 入口：**主菜单 9（订阅与节点链接）→ 订阅服务管理**。
@@ -103,9 +128,12 @@ sb help           # 帮助
 
 | 客户端 | 自动返回格式 |
 |---|---|
-| V2rayN / v2rayNG / 小火箭 / Throne | base64 订阅（多协议） |
+| V2rayN / v2rayNG / Throne | base64 订阅（sing-box 专属协议带 `v2rayn://`，自动锁 sing-box 内核） |
+| 小火箭（Shadowrocket）/ Quantumult / Loon / Surge / Karing / Hiddify | base64 订阅（**纯标准链接**，识别率最高） |
 | Clash Verge / mihomo / Stash | YAML 配置（完整可直接用） |
 | Sing-box（SFI / SFA / SFM） | JSON 配置 |
+
+> **小火箭为什么单独一份？** v2rayN 的 `v2rayn://` 是**私有格式**，只有 v2rayN 认识。若把它喂给小火箭，小火箭只认得出 `vless://` / `vmess://` / `trojan://` / `ss://` 这几条标准链接，Hysteria2 / TUIC / AnyTLS / ShadowTLS / HTTP2 / HTTP3 整段解析不了——表现就是「订阅只导入了部分节点」。V2.7 起按 UA 给小火箭单独返回**纯标准链接**的订阅，不再被 `v2rayn://` 卡住。
 
 订阅服务菜单还可：停止服务、复制 URL、改监听端口、设 IP 白名单、轮换访问令牌（旧 URL 立即失效）、看日志。
 
@@ -131,7 +159,7 @@ sb help           # 帮助
 
 ### 不开订阅服务也能用
 
-即便不开启订阅服务，「9. 订阅与节点链接」里仍有：一键复制全部链接、二维码、Clash 配置、v2rayN 订阅、sing-box 配置。
+即便不开启订阅服务，「9. 订阅与节点链接」里仍有：一键复制全部链接、二维码、Clash 配置、v2rayN 订阅、**小火箭订阅（纯标准链接）**、sing-box 配置。
 
 ### 客户端拉取订阅超时怎么办
 
@@ -195,7 +223,7 @@ TaskCanceledException_ctor_DefaultMessage
 所以：**改了脚本 / 换了新版后，必须执行 `sb update`，新逻辑才生效。** 主菜单在不一致时会给出提示（正常情况不显示）：
 
 ```
-脚本更新   已装 V2.1，当前源码 V2.2
+脚本更新   已装 V3.0，当前源码 V3.1
 生效方式   菜单跑的是 menu.sh 快照，执行 sb update 后新逻辑才生效
 ```
 
@@ -211,6 +239,9 @@ TaskCanceledException_ctor_DefaultMessage
 
 ## 常见问题
 
+**Q：Alpine 上升级 / 切换 sing-box 内核后，服务起不来，报 `cannot execute: required file not found`？**
+sing-box 每个版本为 Linux 提供三种包：`-glibc` / `-musl` / 无后缀（默认）。默认包在部分版本上是 glibc 动态链接，放到 musl 的 Alpine 上就缺 `ld-linux` 而无法执行。V2.3 起脚本会**按本机 libc 自动选对变体**（musl → `-musl` 包，glibc → `-glibc` 包，取不到再退回默认），并在安装前**实测二进制能否运行**：跑不起来就自动换下一个变体重试，绝不会把跑不起来的二进制顶掉正在工作的内核。若你用的是旧版，重装内核前先升级管理器（`sb update`）即可。
+
 **Q：用 `bash <(curl ...)` 安装后 `sb` 进不去 / 提示找不到 menu.sh？**
 `bash <(curl URL)` 时脚本的 `$0` 是 `/dev/fd/63` 这样的**管道**，bash 执行脚本时已把管道读空，脚本无法再读自己来写 `menu.sh`（旧版会静默写出一个空文件）。V2.2 起：读不到源文件时会自动从脚本内置的更新地址重新拉取一份写入。若仍失败，改用「先下载再运行」更稳：`curl -fsSL <URL> -o sing-box.sh && bash sing-box.sh`。
 
@@ -222,6 +253,34 @@ Xray-core v26.2.6 起彻底移除了 `allowInsecure`。脚本对 Xray 系协议�
 
 **Q：v2rayN 导入 sing-box 专属协议（Hysteria2 / TUIC 等）报错？**
 v2rayN 同时挂 Xray / sing-box / mihomo 三个内核，标准链接不携带内核信息，默认会用 Xray，而 Hysteria2 / TUIC 等是 sing-box 专属。脚本对这 8 个协议导出 `v2rayn://` 私有格式链接，显式锁定 `CoreType:24`（sing-box），导入后自动切内核。
+
+**Q：小火箭（Shadowrocket）导入订阅后只认出部分节点，Hysteria2 / TUIC 等不见了？**
+因为订阅服务此前把 v2rayN 的私有格式 `v2rayn://` 也发给了小火箭，而小火箭不认识这个 scheme，只认 `vless://` / `vmess://` / `trojan://` / `ss://` 这类标准链接，其余整段被丢弃。V2.7 起订阅服务按 UA 分流：识别到小火箭就给**纯标准链接**的订阅（`hysteria2://` / `tuic://` / `anytls://` / `http://` 等），能导入多少是多少，不再被 `v2rayn://` 卡住。
+> 升级后需要**重启一次订阅服务**（主菜单 9 → 订阅服务 → 1. 启动 / 刷新订阅服务），新的分流规则才会生效（nginx 后端尤其如此，它读的是磁盘上的站点配置）。也可在小火箭里直接改用「9 → 5. 小火箭订阅」的地址。
+
+**Q：节点名全是 `Hysteria2` 这种，分不清哪条是哪台机器的？**
+V2.7 起默认命名是 `<国家/地区> <协议类型>`（如 `中国香港 Hysteria2`），多台机器混进同一订阅也能区分。想自定义前缀见上面的「节点命名」一节。
+
+**Q：Alpine 上「TLS SNI 域名优选」所有域名都显示 `0 ms`，或者卡在某个域名不动？**
+两个都源于 BusyBox/musl 与 GNU 的差异，已修（`sb update` 升级即可）：
+- `0 ms`：计时用了 GNU 专有的 `date +%s%3N`，BusyBox 的 date 不报错、只把 `%3N` 原样输出，导致差值恒为 0。V2.9 起改用三级回退的 `now_ms()`（GNU `%N` → `/proc/uptime` → `date +%s`）。
+- 卡死：V2.9 先改用 `curl -I --connect-timeout 2 --max-time 3`，但**只修好了一半**——如果卡在**本机 DNS 解析**里，curl 自己的超时是无效的（`getaddrinfo()` 是同步阻塞调用，curl 的定时器根本没机会跑），而 BusyBox 的 `timeout` 也未必收得掉。典型现象是**每次都卡在不同域名**（一次第 7 个 `gateway.icloud.com`、一次第 10 个 `www.bing.com`）。
+  **V3.0 起**在探测外面套了一层纯 bash 看门狗 `run_with_timeout`：后台起进程 + 到点 `kill -9`。SIGKILL 不可被捕获/阻塞，卡在 DNS 里也照杀，**单个域名最多耗 5 秒**；并且连续 3 个域名不可达就直接中止测速，提示你检查 `cat /etc/resolv.conf`，不再白等 12 个域名。
+
+**Q：测速时刷屏 `menu.sh: fork: retry: Resource temporarily unavailable`？**
+这是**系统进程数（pids）被占满、fork 直接失败**，不是脚本报错。V3.0 的看门狗写法有缺陷：`( sleep N; kill ) &` 里 kill 只能杀掉那个子 shell，子 shell 里的 `sleep` 会变成**孤儿**继续活满 N 秒；12 个候选域名几秒内跑完，孤儿能攒到十几个，在小 pids 限额的小鸡上就把进程数打满了。
+**V3.1 起**把定时器改成「`sleep N &` 单命令后台化」——`$!` 拿到的就是 sleep 进程本身，目标一结束就**真把它杀掉，零孤儿**；并用 `wait -n` 阻塞等待（不轮询、不空转）。顺带去掉了 `mktemp`/`cat`/`rm` 三件套，命令输出直接走 stdout。**每个域名的 fork 次数从 6 次降到 2 次，测速结束不留任何后台进程。** 另加 30 秒总时长上限（用 bash 内建 `SECONDS`，零开销）兜底。
+
+**Q：Alpine 上「系统信息」的 CPU 占用一直是 `—`？**
+同一个根因（`date +%s%N` 拿不到数字），V2.9 一并修好了。
+
+**Q：部署节点时提示 `jq: error: syntax error, unexpected label, expecting IDENT`？**
+V2.7 的一个 bug：节点记录里用了一个叫 `label` 的字段，而 `label` 是 jq 的保留关键字，不能直接当对象键。升级到 **V2.8**（`sb update`）即可，该字段已改名 `proto_label`。
+
+**Q：升级后发现某次部署「配置已应用」，但节点列表和订阅里都没有那个节点？**
+那是 V2.7 的 bug 留下的**孤儿 inbound**：inbound 已写进 `config.json`，但节点记录没写成功，所以它不在订阅里、也没法在菜单里删除（还白占一个端口）。V2.8 起不会再产生；清理已有的：
+- 「11. 自检 / 修复」会把它列出来；
+- 「3. 节点管理 → 8. 清理孤儿入站」确认后即可删除。
 
 **Q：批量部署报「成功 0；失败 16」？**
 已改为逐个协议校验，坏的那个就地回滚，不牵连已成功的；开跑前也会预检内核版本，跳过不支持的协议。
@@ -260,11 +319,73 @@ v2rayN 同时挂 Xray / sing-box / mihomo 三个内核，标准链接不携带�
 - 系统：Debian / Ubuntu / CentOS / Rocky / AlmaLinux / Fedora / Alpine / Arch 等
 - init：systemd（完整支持）、openrc、无 init 的手动进程模式
 - 架构：x86_64 / arm64 等（自动检测）
+- libc：glibc（Debian / Ubuntu / CentOS…）与 musl（Alpine / OpenWrt…）都会**自动下载对应的 sing-box 构建**，不需要手动选包
 - 依赖：`jq`、`curl`（脚本会自动尝试安装缺失的）
+- **不依赖 GNU 扩展**：`date +%s%N`、`sort -V`、`ps --no-headers` 这类 GNU 专有用法要么已规避、要么带 BusyBox 回退（见「版本说明 → V3.1」），Alpine / OpenWrt 这类 BusyBox 环境可正常使用
+- **不依赖外部 `timeout` 命令**：需要硬超时的地方统一走脚本自带的 `run_with_timeout`（纯 bash 看门狗 + `kill -9`），精简系统上没装 `timeout` 也不影响
+- **轻量**：探测类操作（SNI 优选）每个域名只 fork 2 个进程，用 `wait -n` 阻塞等待（不轮询、不吃 CPU），跑完即收干净、不留后台进程
 
 ---
 
 ## 版本说明
+
+### V3.1
+- **修复 SNI 优选刷屏 `fork: retry: Resource temporarily unavailable`（系统 pids 被占满）。**
+  - V3.0 的看门狗写成 `( sleep N; kill -9 $pid ) &`，**kill 只能杀掉那个子 shell**，子 shell 里的 `sleep` 会变成**孤儿**继续活满 N 秒。12 个候选域名几秒内跑完，孤儿攒到十几个，在 pids 限额很紧的小鸡上直接把进程数打满、fork 失败刷屏。
+  - 现在定时器改成 **`sleep N &` 单命令后台化** —— bash 直接 fork+exec，`$!` 拿到的就是 sleep 进程本身的 PID，目标一结束就 `kill -9` 它，**真杀掉、零孤儿**。
+  - 等待方式改成 **`wait -n`**（等"先结束的那个"）：**阻塞等待，不轮询、不空转**，既不占 CPU 也不会为了"每 0.2 秒看一眼"白等。老 bash（<4.3）自动退回分片看门狗。
+  - 顺带**去掉 `mktemp` / `cat` / `rm` 三件套**：命令输出直接走 stdout 由调用方 `$(...)` 捕获，省掉 3 次 fork 和 3 次磁盘 IO。
+  - 结果：**每个域名 fork 次数 6 → 2，测速结束零后台进程残留**（函数返回前目标和定时器都已 `kill -9` + `wait` 收尸）。
+- **新增 30 秒总时长上限**：用 bash 内建 `SECONDS` 计时（零 fork 零开销），大面积超时时果断收手，不让用户干等（最坏原本要 12×5=60 秒）。
+- 老 bash（< 4.3，没有 `wait -n`）自动退回分片看门狗：每 1 秒自检一次，目标提前结束时立刻自己退出；即便被强杀，里面的 `sleep` 最多也只活 1 秒。
+
+### V3.0
+- **彻底修复 Alpine 上「SNI 优选」卡死**（V2.9 只修好了一半）。
+  - 真根因：卡顿发生在**本机 DNS 解析**里。`getaddrinfo()` 是**同步阻塞调用**，curl 的 `--connect-timeout` / `--max-time` **管不了**它（定时器根本没机会触发）；BusyBox 的 `timeout` 也未必存在、未必收得掉卡住的子进程。用户实测**每次卡在不同域名**（第 7 个 `gateway.icloud.com`、第 10 个 `www.bing.com`），域名不固定 = 本机 DNS 抽风，不是某个域名的问题。
+  - 修法：新增纯 bash 看门狗 **`run_with_timeout <秒> <命令...>`** —— 后台起进程 + 到点 `kill -9`。SIGKILL 不可被捕获/阻塞，卡在 DNS 里也照杀；全程只用 `sleep` / `kill` / `wait`，BusyBox 都有，**不依赖外部 `timeout` 命令**。`probe_sni` 外面套上它，**单个域名最多耗 5 秒**，无论卡在哪一步都收得掉。
+  - 另外新增**连续失败熔断**：连续 3 个域名不可达即中止测速（判定为本机 DNS / 出网异常），并提示 `cat /etc/resolv.conf`、`ping -c2 1.1.1.1` 自查，不再把 12 个域名挨个白等一遍。
+- **顺带去掉一处外部 `timeout` 依赖**：UDP 出站探测的兜底分支原本写 `timeout 4 bash -c '...'`，精简系统缺 `timeout` 会让整段直接判成「UDP 被限制」的**假阴性**（进而误砍 UDP 类协议）；现在改用自带的 `run_with_timeout`。
+
+### V2.9
+- **修复 Alpine（BusyBox / musl）上「SNI 优选」全部显示 `0 ms`、并且会卡死**：
+  - `0 ms` 的原因：计时用了 `date +%s%3N`，而 `%N` 是 **GNU date 的扩展**。BusyBox 的 date **不报错**，只是把 `%3N` 当普通字符原样输出（得到 `1759146789%3N`），于是退出码是 0（`|| 兜底` 根本不触发）、`$((t2-t1))` 也算不出数，所有域名都成了 `0 ms`。
+  - 卡死的原因：探测用的是 `timeout 2 openssl s_client …`，在 Alpine 上实测**卡在某个候选域名（如 www.bing.com）再也不往下走**——openssl 卡在 connect/DNS 时 BusyBox 的 `timeout` 没能及时回收它，把整个节点部署流程一起僵住。
+  - 现在改为**新增 `now_ms()`（GNU `%N` → `/proc/uptime` → `date +%s` 三级回退，跨发行版通用）**，并把探测换成 **`curl -I` + `--connect-timeout/--max-time`**：超时由 curl 自己强制，不再依赖外部 `timeout`；`%{time_appconnect}` 直接给出 TCP+TLS 握手耗时，而且**不看 curl 退出码**（超时/对端提前断开时握手时间仍然有效），只有 `0`/空才判定为不可达。
+- 顺带修好同一根因的两个地方：**「系统信息 / 订阅服务」里的 CPU 占用在 Alpine 上永远显示不出来**（`cpu_pct` 和 `sub_resource` 也用了 `date +%s%N`，拿不到数字就直接返回空）——现在统一走 `now_ms()`。
+
+### V2.8
+- **修复 V2.7 引入的严重回归：任何协议都部署不了**。V2.7 给节点记录加了一个叫 `label` 的字段，但 **`label` 是 jq 的保留关键字**（`label $out | ... break $out` 用的就是它），写成 `{label:$label}` 会被 jq 判为语法错误：
+  ```
+  jq: error: syntax error, unexpected label, expecting IDENT or __loc__
+  ```
+  于是 `add_node` 整条失败，但 `append_inbound` 早已把 inbound 写进 `config.json` —— 结果就是「配置检查通过 → 配置已应用」，可节点既没进节点列表、也没进订阅。该字段已改名为 `proto_label`（非关键字）。
+- **不再产生「孤儿 inbound」**：`add_node` 现在会**判成败**并在失败时返回非 0；单协议部署会检查返回值，发现 `config.json` 真被改过就**自动回滚到操作前快照**，不会再出现「有 inbound、没节点记录」的中间态。
+- **新增「孤儿 inbound」检测与清理**：config 里有 inbound、节点列表里却没有对应记录（历史遗留）时——
+  - 「11. 自检 / 修复」会直接列出来并提示；
+  - 「3. 节点管理 → 8. 清理孤儿入站」可一键查看并删除（逐个确认，删完自动 `validate` + 重启 + 刷新订阅）。
+  判定用的是「同协议 + 同端口 + 同传输层」精确匹配，所以新旧节点共存时能准确认出哪个才是多余的（不会误删刚部署好的那个）。
+
+### V2.7
+- **修复小火箭（Shadowrocket）订阅「只认出部分节点」**：v2rayN 的 `v2rayn://` 是私有格式，只有 v2rayN 认识；订阅服务此前把它当作「未知 UA」的兜底内容发给了所有其它客户端（含小火箭），于是 Hysteria2 / TUIC / AnyTLS / ShadowTLS / HTTP2 / HTTP3 这些走 `v2rayn://` 的协议在小火箭里整段解析失败。现在按 UA 分流：**小火箭返回纯标准链接的订阅**（nginx 后端加了一条 `map` 规则，Python 后端加了对应分支），能导入多少是多少。订阅菜单新增「5. 查看 / 复制 小火箭订阅」。
+- **节点名默认改为 `<国家/地区> <协议类型>`**（如 `中国香港 VLESS + Reality`），不再所有节点都叫同一个协议名。单个节点部署时会多问一句「节点名称」（回车用默认），可当场自定义；批量部署沿用默认名不打断流程。
+- **新增「节点命名」设置**（主菜单 6 → 5）：可设自定义前缀（如 `HK-01`）、清空回退到国家名、或**立即把已有节点按当前规则重命名**；「节点管理 → 7. 重命名节点」还支持全部加统一前缀与单个改名。改名只影响订阅显示，不动端口与密钥。
+
+### V2.6
+- **修复 Alpine 上订阅服务启用 nginx 后 `nginx -t` 报 `"map" directive is not allowed here`**：各发行版的 nginx 站点目录并不一致 —— Debian/Ubuntu/CentOS/Arch 把 `include /etc/nginx/conf.d/*.conf;` 放在 **`http` 块内**，而 **Alpine 的 conf.d 是给主上下文（root）用的**，`http` 块里用的是 `/etc/nginx/http.d/*.conf`。脚本此前写死 `conf.d`，于是在 Alpine 上把 `map` / `server` 塞进了主上下文 → 配置非法、`nginx -t` 失败，还会**连带整台 nginx（含你自建的其它站点）一起校验不过**。现在改为**读 `/etc/nginx/nginx.conf`、定位 `http` 块内的 `include .../*.conf;` 目录**（探测不到再按 `http.d` / `conf.d` 存在性兜底），并会在启动时自动清掉旧版遗留在错误位置的配置。
+- 顺带：IPv6 监听（`listen [::]:<port>`）改为**仅在系统真的启用 IPv6 时**才写入，避免无 IPv6 的机器报 `socket() [::]:port failed (97: Address family not supported by protocol)`。
+
+### V2.5
+- **「系统信息」新增「进程数量」一行**：并排显示 `sing-box N   nginx M   系统 K`（N/M 为进程数，K 为整机进程总数）。一眼看出 sing-box 是否多开/挂掉、nginx 是否还在跑；nginx 未安装时显示「未装」而不是误导性的 `0`。进程名用 `pgrep -x` 精确匹配，没有 `pgrep` 时退回 `ps -e -o comm`。
+- **修复「系统信息」里 CPU / 内存 / 已运行整行消失**：这几行原本只在服务运行时才打印，服务一停就整行不见，看着像「被删掉了」。现在改为**始终占位**，取不到值时显示灰色 `—`，行位置固定不跳动。
+
+### V2.4
+- **修复「升级 / 切换内核」面板版本号显示 `null`**（V2.3 引入的回归）：V2.3 挑构建变体时误用了等值比较 `select(.name == "linux-amd64-glibc.tar.gz")`，但真实资源名带版本前缀（`sing-box-1.14.2-linux-amd64-glibc.tar.gz`），等值永远不成立 → 一个版本都选不出来 → 面板显示 `null`。现改回 `endswith`，四处 jq 全部修正；并加了一道防御：选不出时输出空而不是 `null`，面板会如实显示「查询失败，将用内置版本」。
+- 顺带修正 `libc_kind()` 在 glibc 系统上的判定：`ls /lib64/... /lib/...` 两个通配符只要有一个不匹配，`ls` 就返回非零，导致 glibc 系统被误判成「未知」；现改为分别检测。
+
+### V2.3
+- **修复 Alpine（musl）上升级 / 切换内核后起不来**：sing-box 每个版本都为 Linux 提供三种包 —— `-glibc` / `-musl` / 无后缀（默认）。脚本此前只按 `endswith("linux-<arch>.tar.gz")` 匹配，永远拿到**默认包**；默认包在部分版本上是 glibc 动态链接，在 musl 的 Alpine 上执行会报 `cannot execute: required file not found`（找不到 glibc 的 ld-linux）。现在会**按本机 libc 选对变体**：musl 系统优先 `-musl` 包、glibc 系统优先 `-glibc` 包，取不到再退回默认包。版本列表、指定版本号这两条路径也改为先查该 tag 的真实资源名再挑变体，不再凭空拼 `linux-<arch>.tar.gz`。
+- **安装前增加「执行自检」，并逐个变体重试**：下载后先落到 `sing-box.new` 并实测 `sing-box version` 能否运行，跑不起来就自动换下一个 libc 变体（musl → glibc → 默认）重试，全部失败才报错。这样**任何情况下都不会用跑不起来的二进制顶掉正在工作的内核**，Ubuntu 等 glibc 系统的正常路径完全不受影响。
+- **修复回滚后版本号显示错误**：升级失败回滚时，旧内核二进制会换回去，但版本号文件已被新内核改写、版本缓存也没失效，界面会显示成新版本号（实测回滚后仍显示 1.14.2）。现在回滚会一并还原版本号文件、作废版本缓存；成功换内核后也会立即作废缓存。
 
 ### V2.2
 - **修复 `bash <(curl ...)` 一键安装后 `menu.sh` 写不出来**：该方式下脚本的 `$0` 是 `/dev/fd/63` 这样的**管道**，bash 执行脚本时已把管道读空，脚本无法再读自己（旧版 `cp` 会静默写出一个**空 menu.sh**，于是 `sb` 进去什么都没发生）。现在 `write_self_menu` 读不到源文件时会自动从内置更新地址重新拉取一份写入；安装阶段也会检查写入结果，失败即明确中止，不再假装「安装完成」。
