@@ -75,7 +75,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V2.7"
+VERSION="V2.8"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -850,20 +850,30 @@ resolve_node_name(){
     printf '%s' "${v:-$def}"
 }
 add_node(){
-    local label="$1" type="$2" proto="$3" port="$4" uuidv="$5" pw="$6" sni="$7" extra="$8" pub="$9" sid="${10}"
+    local plabel="$1" type="$2" proto="$3" port="$4" uuidv="$5" pw="$6" sni="$7" extra="$8" pub="$9" sid="${10}"
     local name
-    name="$(resolve_node_name "$label")"
-    jq --arg name "$name" --arg label "$label" --arg type "$type" --arg proto "$proto" --arg port "$port" \
+    name="$(resolve_node_name "$plabel")"
+    if ! jq --arg name "$name" --arg plabel "$plabel" --arg type "$type" --arg proto "$proto" --arg port "$port" \
        --arg uuid "$uuidv" --arg password "$pw" --arg sni "$sni" --arg extra "$extra" \
        --arg public_key "$pub" --arg short_id "$sid" \
-       '. + [{name:$name,label:$label,type:$type,proto:$proto,port:($port|tonumber),uuid:$uuid,password:$password,sni:$sni,extra:$extra,public_key:$public_key,short_id:$short_id}]' \
-       "$NODES" > "$NODES.tmp" && mv "$NODES.tmp" "$NODES"
+       '. + [{name:$name,proto_label:$plabel,type:$type,proto:$proto,port:($port|tonumber),uuid:$uuid,password:$password,sni:$sni,extra:$extra,public_key:$public_key,short_id:$short_id}]' \
+       "$NODES" > "$NODES.tmp"; then
+        rm -f "$NODES.tmp"
+        warn "节点记录写入失败（nodes.json 未改动），本次部署将回滚"
+        return 1
+    fi
+    if ! mv "$NODES.tmp" "$NODES" 2>/dev/null; then
+        rm -f "$NODES.tmp"
+        warn "节点记录写入失败（nodes.json 未改动），本次部署将回滚"
+        return 1
+    fi
+    return 0
 }
 rename_nodes_default(){
     local pre="${NODE_NAME_PREFIX:-${COUNTRY_NAME:-}}"
     jq --arg pre "$pre" '
-      map( .label = (.label // .name)
-         | .name = (if ($pre|length) > 0 then ($pre + " " + .label) else .label end) )' \
+      map( .proto_label = (.proto_label // .name)
+         | .name = (if ($pre|length) > 0 then ($pre + " " + .proto_label) else .proto_label end) )' \
       "$NODES" > "$NODES.tmp" 2>/dev/null || { rm -f "$NODES.tmp"; return 1; }
     [ -s "$NODES.tmp" ] || { rm -f "$NODES.tmp"; return 1; }
     mv "$NODES.tmp" "$NODES" 2>/dev/null || { rm -f "$NODES.tmp"; return 1; }
@@ -873,12 +883,91 @@ rename_nodes_prefix(){
     local pre="$1"
     [ -n "$pre" ] || return 1
     jq --arg pre "$pre" '
-      map( .label = (.label // .name)
-         | .name = ($pre + " " + .label) )' \
+      map( .proto_label = (.proto_label // .name)
+         | .name = ($pre + " " + .proto_label) )' \
       "$NODES" > "$NODES.tmp" 2>/dev/null || { rm -f "$NODES.tmp"; return 1; }
     [ -s "$NODES.tmp" ] || { rm -f "$NODES.tmp"; return 1; }
     mv "$NODES.tmp" "$NODES" 2>/dev/null || { rm -f "$NODES.tmp"; return 1; }
     return 0
+}
+
+tag_family_to_raw(){
+    local t="$1" base raw
+    for ((raw=1; raw<=16; raw++)); do
+        [ "$(raw_to_tag "$raw")" = "$t" ] && { printf '%s' "$raw"; return 0; }
+    done
+    base="$(printf '%s' "$t" | sed -E 's/-[0-9]+$//')"
+    [ "$base" = "$t" ] && return 1
+    for ((raw=1; raw<=16; raw++)); do
+        [ "$(raw_to_tag "$raw")" = "$base" ] && { printf '%s' "$raw"; return 0; }
+    done
+    return 1
+}
+orphan_inbounds(){
+    [ -f "$CONF" ] || return 0
+    local n_inb i tag port raw ntype udp_inb
+    n_inb="$(jq '.inbounds | length' "$CONF" 2>/dev/null)"
+    case "$n_inb" in ''|*[!0-9]*) return 0 ;; esac
+    for ((i=0; i<n_inb; i++)); do
+        tag="$(jq -r ".inbounds[$i].tag // empty" "$CONF" 2>/dev/null)"
+        [ -n "$tag" ] || continue
+        port="$(jq -r ".inbounds[$i].listen_port // empty" "$CONF" 2>/dev/null)"
+        [ -n "$port" ] || continue
+        raw="$(tag_family_to_raw "$tag")" || continue
+        ntype="$(raw_to_node_type "$raw")"
+        [ -n "$ntype" ] || continue
+        udp_inb="$(jq -r --argjson i "$i" '
+            .inbounds[$i]
+            | if (.type == "hysteria2" or .type == "tuic") then "1"
+              elif (.type == "http") then (if ((.version // []) | index(3)) != null then "1" else "0" end)
+              else "0" end' "$CONF" 2>/dev/null)"
+        if jq -e --arg t "$ntype" --argjson p "$port" --arg u "$udp_inb" '
+              any(.[]; .type == $t
+                      and ((.port | tonumber) == $p)
+                      and (if .proto == "udp" then "1" else "0" end) == $u)' \
+              "$NODES" >/dev/null 2>&1; then
+            continue
+        fi
+        printf '%s\t%s\n' "$tag" "$port"
+    done
+}
+cleanup_orphan_inbounds(){
+    need_root
+    local rep; rep="$(orphan_inbounds)"
+    if [ -z "$rep" ]; then ok "没有发现孤儿 inbound"; return 0; fi
+    warn "发现以下孤儿 inbound（config.json 里有、节点列表里没有）："
+    local tag port
+    while IFS=$'\t' read -r tag port; do
+        [ -n "$tag" ] || continue
+        printf '  · %-24s 端口 %s\n' "$tag" "$port"
+    done <<<"$rep"
+    echo "  ${DIM}它们不在订阅里、也无法在菜单里删除，还会白占端口。${RESET}"
+    echo
+    read -r -p "  删除这些孤儿 inbound？（y/N）： " _y || _y=""
+    case "$_y" in y|Y|yes|YES) : ;; *) info "已取消"; return 0 ;; esac
+    backup
+    local _fails=0
+    while IFS=$'\t' read -r tag port; do
+        [ -n "$tag" ] || continue
+        if jq --arg t "$tag" --argjson p "$port" '
+              [ .inbounds[] | select(.tag == $t and (.listen_port == $p)) ] as $hits
+              | ($hits[0]) as $v
+              | if $v == null then . else .inbounds |= map(select(. != $v)) end' \
+              "$CONF" > "$CONF.tmp" 2>/dev/null && [ -s "$CONF.tmp" ]; then
+            mv "$CONF.tmp" "$CONF" 2>/dev/null || { rm -f "$CONF.tmp"; _fails=$((_fails+1)); }
+        else
+            rm -f "$CONF.tmp"; _fails=$((_fails+1))
+        fi
+    done <<<"$rep"
+    if [ "$_fails" -gt 0 ]; then warn "$_fails 个 inbound 清理失败"; fi
+    if validate; then
+        apply >/dev/null 2>&1 || true
+        export_all >/dev/null 2>&1 || true
+        ok "孤儿 inbound 已清理，订阅已刷新"
+    else
+        warn "清理后配置检查未通过，正在回滚"
+        rollback
+    fi
 }
 del_node_by_raw(){
     local raw="$1"
@@ -3188,6 +3277,19 @@ self_repair(){
     if [ -x "$BIN" ] && jq empty "$CONF" >/dev/null 2>&1; then
         if validate >/dev/null 2>&1; then echo "✓ sing-box 配置检查通过"; else warn "sing-box 配置检查失败"; bad=1; fi
     fi
+    local _orph
+    _orph="$(orphan_inbounds 2>/dev/null)"
+    if [ -n "$_orph" ]; then
+        warn "发现孤儿 inbound（config.json 里有、节点列表里没有）："
+        printf '%s\n' "$_orph" | while IFS=$'\t' read -r _ot _op; do
+            [ -n "$_ot" ] || continue
+            printf '    · %-24s 端口 %s\n' "$_ot" "$_op"
+        done
+        echo "    清理入口：主菜单 3（节点管理）→ 8"
+        bad=1
+    else
+        echo "✓ 没有孤儿 inbound（配置与节点列表一致）"
+    fi
     install_sb_cmd
     chmod 0755 "$MENU" 2>/dev/null || true
     local _mv
@@ -3307,25 +3409,37 @@ node_menu(){
     c="$(menu_id_to_raw "$menu_no")"
     [ -n "$c" ] || { warn "无效选项"; sleep 1; continue; }
     backup
+    local _drc=0
     case "$c" in
-      1) add_vless_reality ;;
-      2) add_hysteria2 ;;
-      3) add_hy2_obfs ;;
-      4) add_tuic ;;
+      1) add_vless_reality || _drc=$? ;;
+      2) add_hysteria2 || _drc=$? ;;
+      3) add_hy2_obfs || _drc=$? ;;
+      4) add_tuic || _drc=$? ;;
       5) add_ss ;;
       6) add_trojan ;;
-      7) add_vmess_ws_tls ;;
-      8) add_vless_ws_tls ;;
-      9) add_h2_reality ;;
-      10) add_grpc_reality ;;
-      11) add_anytls ;;
-      12) add_naive ;;
-      13) add_http2 ;;
-      14) add_http3 ;;
-      15) add_hy2_realm ;;
-      16) add_shadowtls ;;
+      7) add_vmess_ws_tls || _drc=$? ;;
+      8) add_vless_ws_tls || _drc=$? ;;
+      9) add_h2_reality || _drc=$? ;;
+      10) add_grpc_reality || _drc=$? ;;
+      11) add_anytls || _drc=$? ;;
+      12) add_naive || _drc=$? ;;
+      13) add_http2 || _drc=$? ;;
+      14) add_http3 || _drc=$? ;;
+      15) add_hy2_realm || _drc=$? ;;
+      16) add_shadowtls || _drc=$? ;;
       *) warn "无效选项"; pause; continue ;;
     esac
+    if [ "$_drc" -ne 0 ]; then
+        if [ -n "${CURRENT_SNAPSHOT:-}" ] && [ -f "$CURRENT_SNAPSHOT/config.json" ] \
+           && ! cmp -s "$CONF" "$CURRENT_SNAPSHOT/config.json"; then
+            warn "本次部署未完成，已恢复操作前快照（不会留下孤儿 inbound）"
+            rollback
+        else
+            warn "本次部署未完成（未写入任何配置）"
+        fi
+        pause
+        continue
+    fi
     echo
     info "正在检查配置 ..."
     if validate; then
@@ -3873,9 +3987,11 @@ manage_nodes(){
     echo "5. 显示二维码（单个 / 全部）"
     echo "6. 修改节点端口"
     echo "7. 重命名节点（按国家+协议 / 加前缀 / 单个改名）"
+    echo "8. 清理孤儿入站（config 里有、节点列表里没有）"
     echo "0. 返回"
     read -r -p "请选择： " c || c=""
     case "$c" in
+      8) clear; cleanup_orphan_inbounds; pause; continue ;;
       7)
         echo
         echo "  当前命名规则：${BOLD}${NODE_NAME_PREFIX:-${COUNTRY_NAME:-（未探测到国家）}} <协议类型>${RESET}"
