@@ -10,10 +10,12 @@
 
 ## 快速开始
 
-```bash
+
 # 方式一：把脚本传到服务器后直接 bash（推荐）
+```bash
 bash sing-box.sh
 ```
+
 # 方式二：curl 一键安装（把 <脚本下载地址> 换成你的实际地址）
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh)
