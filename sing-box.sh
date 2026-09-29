@@ -75,7 +75,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.0"
+VERSION="V3.1"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -302,20 +302,48 @@ now_ms(){
         *) printf '%s' "$(( v * 1000 ))"; return 0 ;;
     esac
 }
+_SB_WAITN=0
+if [ "${BASH_VERSINFO[0]:-0}" -gt 4 ] 2>/dev/null; then
+    _SB_WAITN=1
+elif [ "${BASH_VERSINFO[0]:-0}" -eq 4 ] 2>/dev/null && [ "${BASH_VERSINFO[1]:-0}" -ge 3 ] 2>/dev/null; then
+    _SB_WAITN=1
+fi
+
 run_with_timeout(){
     local secs="$1"; shift
-    local out_f pid killer rc
-    out_f="$(mktemp 2>/dev/null)" || out_f="/tmp/.sb_rwt.$$"
-    "$@" >"$out_f" 2>/dev/null &
+    local pid t rc
+    "$@" 2>/dev/null &
     pid=$!
-    ( sleep "$secs"; kill -9 "$pid" 2>/dev/null ) >/dev/null 2>&1 &
-    killer=$!
-    wait "$pid" 2>/dev/null
-    rc=$?
-    kill "$killer" 2>/dev/null
-    wait "$killer" 2>/dev/null
-    cat "$out_f" 2>/dev/null
-    rm -f "$out_f" 2>/dev/null || true
+    if [ "${_SB_WAITN:-0}" = "1" ]; then
+        sleep "$secs" >/dev/null 2>&1 &
+        t=$!
+        wait -n 2>/dev/null
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null
+            wait "$pid" 2>/dev/null
+            rc=124
+        else
+            wait "$pid" 2>/dev/null
+            rc=$?
+        fi
+        kill -9 "$t" 2>/dev/null
+        wait "$t" 2>/dev/null
+    else
+        (
+            i=0
+            while [ "$i" -lt "$secs" ]; do
+                sleep 1
+                i=$(( i + 1 ))
+                kill -0 "$pid" 2>/dev/null || exit 0
+            done
+            kill -9 "$pid" 2>/dev/null
+        ) >/dev/null 2>&1 &
+        t=$!
+        wait "$pid" 2>/dev/null
+        rc=$?
+        kill "$t" 2>/dev/null
+        wait "$t" 2>/dev/null
+    fi
     [ "$rc" -eq 137 ] && return 124
     return "$rc"
 }
@@ -739,7 +767,14 @@ sni_optimize(){
     local d ms best="" bestms=99999 line
     local results=""
     local fail_streak=0
+    local _t0="$SECONDS" _budget_stop=0
     for d in "${SNI_CANDIDATES[@]}"; do
+        if [ $(( SECONDS - _t0 )) -ge 30 ]; then
+            echo
+            warn "测速已进行 30 秒仍未测完，提前结束（本机到候选域名的网络可能异常）"
+            _budget_stop=1
+            break
+        fi
         printf '  %-26s' "$d"
         ms="$(probe_sni "$d")"
         case "$ms" in ''|*[!0-9]*) ms=9999 ;; esac
@@ -762,7 +797,11 @@ sni_optimize(){
         fi
     done
     if [ -z "$best" ]; then
-        warn "全部候选域名均不可达（本机可能无法直连 443，或 DNS 异常）"
+        if [ "$_budget_stop" = "1" ]; then
+            warn "本次没测出可用结果，沿用现有默认 SNI"
+        else
+            warn "全部候选域名均不可达（本机可能无法直连 443，或 DNS 异常）"
+        fi
         echo "  排查建议：cat /etc/resolv.conf 看 DNS 是否可用；"
         echo "            ping -c2 1.1.1.1 看是否连外网都不通。"
         return 1
