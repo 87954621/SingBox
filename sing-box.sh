@@ -75,7 +75,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.1"
+VERSION="V3.2"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -1984,10 +1984,15 @@ link_for_node(){
     sni="$(jq -r '.sni // empty' <<<"$row")";    extra="$(jq -r '.extra // empty' <<<"$row")"
     pub="$(jq -r '.public_key // empty' <<<"$row")"; sid="$(jq -r '.short_id // empty' <<<"$row")"
     local flow_q=""
-    local pcs_q=""
-    local _pcs
-    _pcs="$(cert_sha256_pcs 2>/dev/null)"
-    [ -n "$_pcs" ] && pcs_q="&pcs=$(urlencode "$_pcs")"
+    local pcs_q="" _ai=0
+    local _pcs=""
+    if [ "${LINK_ALLOW_INSECURE:-0}" = "1" ]; then
+        pcs_q="&allowInsecure=1&insecure=1"
+        _ai=1
+    else
+        _pcs="$(cert_sha256_pcs 2>/dev/null)"
+        [ -n "$_pcs" ] && pcs_q="&pcs=$(urlencode "$_pcs")"
+    fi
     local uot_q=""
     if [ "$UOT_ENABLED" = "1" ]; then
         case "$type" in
@@ -2003,9 +2008,9 @@ link_for_node(){
         printf '%s\n' "vless://${uuidv}@${SERVER_IP}:${port}?encryption=none&security=tls&type=ws&host=$(urlencode "$sni")&sni=$(urlencode "$sni")&path=$(urlencode "$extra")${pcs_q}${uot_q}#$(urlencode "$name")" ;;
       vmess-ws-tls)
         if [ "$UOT_ENABLED" = "1" ]; then
-            jq -n --arg v "2" --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" --arg id "$uuidv" --arg host "$sni" --arg path "$extra" --arg pcs "$_pcs" '{v:$v,ps:$ps,add:$add,port:$port,id:$id,aid:0,scy:"auto",net:"ws",type:"none",host:$host,path:$path,tls:"tls",sni:$host,alpn:"",fp:"",pcs:$pcs,"udp-over-tcp":true,"udp-over-tcp-version":2}' | b64 | sed 's/^/vmess:\/\//'
+            jq -n --arg v "2" --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" --arg id "$uuidv" --arg host "$sni" --arg path "$extra" --arg pcs "$_pcs" --argjson ai "$_ai" '{v:$v,ps:$ps,add:$add,port:$port,id:$id,aid:0,scy:"auto",net:"ws",type:"none",host:$host,path:$path,tls:"tls",sni:$host,alpn:"",fp:""} + (if $ai == 1 then {"allowInsecure":true} else {pcs:$pcs} end) + {"udp-over-tcp":true,"udp-over-tcp-version":2}' | b64 | sed 's/^/vmess:\/\//'
         else
-            jq -n --arg v "2" --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" --arg id "$uuidv" --arg host "$sni" --arg path "$extra" --arg pcs "$_pcs" '{v:$v,ps:$ps,add:$add,port:$port,id:$id,aid:0,scy:"auto",net:"ws",type:"none",host:$host,path:$path,tls:"tls",sni:$host,alpn:"",fp:"",pcs:$pcs}' | b64 | sed 's/^/vmess:\/\//'
+            jq -n --arg v "2" --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" --arg id "$uuidv" --arg host "$sni" --arg path "$extra" --arg pcs "$_pcs" --argjson ai "$_ai" '{v:$v,ps:$ps,add:$add,port:$port,id:$id,aid:0,scy:"auto",net:"ws",type:"none",host:$host,path:$path,tls:"tls",sni:$host,alpn:"",fp:""} + (if $ai == 1 then {"allowInsecure":true} else {pcs:$pcs} end)' | b64 | sed 's/^/vmess:\/\//'
         fi ;;
       trojan)
         printf '%s\n' "trojan://${pw}@${SERVER_IP}:${port}?security=tls&sni=$(urlencode "$sni")&type=tcp&headerType=none${pcs_q}${uot_q}#$(urlencode "$name")" ;;
@@ -2362,6 +2367,7 @@ export_shadowrocket(){
     local plain="$SUBDIR/shadowrocket_raw.txt"
     : >"$plain"
     local row link
+    local LINK_ALLOW_INSECURE=1
     while IFS= read -r row; do
         link="$(link_for_node "$row" 2>/dev/null)" || link=""
         [ -n "$link" ] && printf '%s\n' "$link" >>"$plain"
