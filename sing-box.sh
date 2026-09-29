@@ -74,7 +74,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V2.3"
+VERSION="V2.4"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -324,7 +324,7 @@ libc_kind(){
     if command -v ldd >/dev/null 2>&1 && ldd /bin/sh 2>&1 | grep -qi musl; then
         printf 'musl'; return 0
     fi
-    if ls /lib64/ld-linux*.so.* /lib/ld-linux*.so.* >/dev/null 2>&1; then
+    if ls /lib64/ld-linux*.so.* >/dev/null 2>&1 || ls /lib/ld-linux*.so.* >/dev/null 2>&1; then
         printf 'glibc'; return 0
     fi
     printf ''
@@ -1460,6 +1460,8 @@ upgrade_singbox(){
     lat_any="$(printf '%s' "$rel" | cut -f1)"
     SINGBOX_CHANNEL=stable; rel="$(fetch_singbox_release)"
     lat_stable="$(printf '%s' "$rel" | cut -f1)"
+    case "$lat_any" in null) lat_any="" ;; esac
+    case "$lat_stable" in null) lat_stable="" ;; esac
     echo
     if [ -n "$lat_any" ]; then
         printf '  %s1.%s 升级到最新版（含 alpha/beta）  %s%s%s  %s← 推荐，能开 HTTP/3%s\n' \
@@ -4400,7 +4402,7 @@ fetch_singbox_release(){
         else 0 end;
       def pnumof: ( restof | [ scan("[0-9]+") ] | map(tonumber)
                     | if length > 0 then .[-1] else 0 end );
-      def pick: [ $sufs[] as $s | .assets[]? | select(.name == ($s + ".tar.gz")) | .browser_download_url ];
+      def pick: [ $sufs[] as $s | .assets[]? | select(.name | endswith($s + ".tar.gz")) | .browser_download_url ];
       [ .[]
         | select(want)
         | select((pick | length) > 0)
@@ -4412,6 +4414,7 @@ fetch_singbox_release(){
       ]
       | sort_by([ (.ver | split(".") | map(tonumber? // 0)), .tier, .pnum ])
       | last
+      | select(. != null)
       | "\(.tag)\t\(.url)"
     ' 2>/dev/null | head -n1
 }
@@ -4430,7 +4433,7 @@ fetch_singbox_version(){
     json="$(curl -fsSL --max-time 20 "https://api.github.com/repos/SagerNet/sing-box/releases/tags/${tag}" 2>/dev/null)"
     if [ -n "$json" ]; then
         url="$(printf '%s' "$json" | jq -r --argjson sufs "$(_asset_suffixes_json)" \
-            '[ $sufs[] as $s | .assets[]? | select(.name == ($s + ".tar.gz")) | .browser_download_url ][0] // empty' 2>/dev/null)"
+            '[ $sufs[] as $s | .assets[]? | select(.name | endswith($s + ".tar.gz")) | .browser_download_url ][0] // empty' 2>/dev/null)"
     fi
     if [ -z "${url:-}" ]; then
         s="linux-${ARCH}"
@@ -4453,7 +4456,7 @@ list_singbox_versions(){
         else 0 end;
       def pnumof: ( restof | [ scan("[0-9]+") ] | map(tonumber)
                     | if length > 0 then .[-1] else 0 end );
-      def pick: [ $sufs[] as $s | .assets[]? | select(.name == ($s + ".tar.gz")) ];
+      def pick: [ $sufs[] as $s | .assets[]? | select(.name | endswith($s + ".tar.gz")) ];
       [ .[]
         | select((pick | length) > 0)
         | { tag: .tag_name, pre: .prerelease, tier: tierof, pnum: pnumof,
@@ -4494,7 +4497,7 @@ download_singbox(){
         json="$(curl -fsSL --max-time 30 "$api")" || { warn "无法访问 GitHub API"; return 1; }
         tag="$(jq -r '.tag_name // empty' <<<"$json")"
         [ -n "$tag" ] || { warn "无法获取 sing-box 版本"; return 1; }
-        url="$(jq -r --argjson sufs "$(_asset_suffixes_json)" '[ $sufs[] as $s | .assets[]? | select(.name == ($s + ".tar.gz")) | .browser_download_url ][0] // empty' <<<"$json")"
+        url="$(jq -r --argjson sufs "$(_asset_suffixes_json)" '[ $sufs[] as $s | .assets[]? | select(.name | endswith($s + ".tar.gz")) | .browser_download_url ][0] // empty' <<<"$json")"
     fi
     [ -n "$url" ] || { warn "找不到 linux-${ARCH} 的发行包（该版本可能没有此架构）"; return 1; }
 
