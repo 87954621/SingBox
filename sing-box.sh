@@ -75,7 +75,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V2.8"
+VERSION="V2.9"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -284,6 +284,24 @@ country_zh(){
 
 now_time(){ date '+%Y-%m-%d %H:%M:%S'; }
 now_epoch(){ date '+%s'; }
+now_ms(){
+    local v
+    v="$(date +%s%N 2>/dev/null)"
+    case "$v" in
+        ''|*[!0-9]*) : ;;
+        *) if [ "${#v}" -ge 17 ]; then printf '%s' "$(( v / 1000000 ))"; return 0; fi ;;
+    esac
+    v="$(awk '{printf "%d", $1*1000}' /proc/uptime 2>/dev/null)"
+    case "$v" in
+        ''|*[!0-9]*) : ;;
+        *) printf '%s' "$v"; return 0 ;;
+    esac
+    v="$(date +%s 2>/dev/null)"
+    case "$v" in
+        ''|*[!0-9]*) return 1 ;;
+        *) printf '%s' "$(( v * 1000 ))"; return 0 ;;
+    esac
+}
 now_tz(){ date '+%Z'; }
 uptime_human(){
     if [ -r /proc/uptime ]; then
@@ -683,24 +701,30 @@ pick_sni_cached(){
     [ -s "$SNI_TESTED_FILE" ] && head -n1 "$SNI_TESTED_FILE" 2>/dev/null
 }
 probe_sni(){
-    local d="$1" t1 t2
-    t1="$(date +%s%3N 2>/dev/null)" || t1="$(date +%s)000"
-    timeout 2 openssl s_client -connect "${d}:443" -servername "$d" </dev/null >/dev/null 2>&1 || {
-        echo 9999; return
-    }
-    t2="$(date +%s%3N 2>/dev/null)" || t2="$(date +%s)000"
-    echo $((t2 - t1))
+    local d="$1" out ms wrap=""
+    command -v curl >/dev/null 2>&1 || { echo 9999; return; }
+    command -v timeout >/dev/null 2>&1 && wrap="timeout 8"
+    out="$($wrap curl -sS -I -o /dev/null \
+            --connect-timeout 2 --max-time 3 \
+            -w '%{time_appconnect}' "https://${d}/" 2>/dev/null)"
+    case "$out" in
+        ''|0|0.0|0.000000|*[!0-9.]*) echo 9999; return ;;
+    esac
+    ms="$(awk -v v="$out" 'BEGIN{printf "%d", v*1000}' 2>/dev/null)"
+    case "$ms" in ''|*[!0-9]*) echo 9999; return ;; esac
+    echo "$ms"
 }
 sni_optimize(){
     panel "TLS SNI 域名优选"
-    echo "  正在实测本地到各候选域名的 TLS 握手耗时（每个约 1-2 秒）..."
+    echo "  正在实测本地到各候选域名的 TLS 握手耗时（每个最多等 3 秒）..."
     echo
-    command -v openssl >/dev/null 2>&1 || { warn "缺少 openssl，无法测速"; return 1; }
+    command -v curl >/dev/null 2>&1 || { warn "缺少 curl，无法测速"; return 1; }
     local d ms best="" bestms=99999 line
     local results=""
     for d in "${SNI_CANDIDATES[@]}"; do
         printf '  %-26s' "$d"
         ms="$(probe_sni "$d")"
+        case "$ms" in ''|*[!0-9]*) ms=9999 ;; esac
         if [ "$ms" -ge 9999 ]; then
             printf '%s超时 / 不可达%s\n' "$DIM" "$RESET"
         else
@@ -1823,17 +1847,17 @@ cpu_pct(){
     [ -n "$pid" ] || { printf ''; return; }
     [ -r "/proc/$pid/stat" ] || { printf ''; return; }
     t1="$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null)"
-    n1="$(date +%s%N 2>/dev/null)"
+    n1="$(now_ms)"
     [[ "$t1" =~ ^[0-9]+$ ]] || { printf ''; return; }
     [[ "$n1" =~ ^[0-9]+$ ]] || { printf ''; return; }
     sleep 0.3
     [ -r "/proc/$pid/stat" ] || { printf ''; return; }
     t2="$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null)"
-    n2="$(date +%s%N 2>/dev/null)"
+    n2="$(now_ms)"
     [[ "$t2" =~ ^[0-9]+$ ]] || { printf ''; return; }
     [[ "$n2" =~ ^[0-9]+$ ]] || { printf ''; return; }
     dticks=$(( t2 - t1 ))
-    dms=$(( (n2 - n1) / 1000000 ))
+    dms=$(( n2 - n1 ))
     [ "$dticks" -ge 0 ] || { printf ''; return; }
     [ "$dms" -gt 0 ] || { printf ''; return; }
     local hz
@@ -2377,7 +2401,7 @@ sub_token(){
         if command -v openssl >/dev/null 2>&1; then
             openssl rand -hex 16 > "$f" 2>/dev/null
         else
-            printf '%s%s%s' "$RANDOM$RANDOM" "$(date +%s%N)" "$RANDOM$RANDOM" \
+            printf '%s%s%s' "$RANDOM$RANDOM" "$(now_ms)" "$RANDOM$RANDOM" \
                 | md5sum | cut -c1-32 > "$f" 2>/dev/null
         fi
         chmod 600 "$f" 2>/dev/null || true
@@ -3143,15 +3167,19 @@ sub_resource(){
         [ -n "$u" ] && t1=$((t1 + u))
     done
     mem=$(( mem / 1024 ))
-    n1="$(date +%s%N 2>/dev/null)"
+    n1="$(now_ms)"
     sleep 0.3
     for pid in $pids; do
         u="$(awk '{print $14+$15}' "/proc/$pid/stat" 2>/dev/null)"
         [ -n "$u" ] && t2=$((t2 + u))
     done
-    n2="$(date +%s%N 2>/dev/null)"
-    dticks=$(( t2 - t1 ))
-    dms=$(( (n2 - n1) / 1000000 ))
+    n2="$(now_ms)"
+    if [[ "$n1" =~ ^[0-9]+$ ]] && [[ "$n2" =~ ^[0-9]+$ ]]; then
+        dticks=$(( t2 - t1 ))
+        dms=$(( n2 - n1 ))
+    else
+        dticks=0; dms=0
+    fi
     hz="$(getconf CLK_TCK 2>/dev/null)"; [[ "$hz" =~ ^[0-9]+$ ]] && [ "$hz" -gt 0 ] || hz=100
     if [ "$dms" -gt 0 ] && [ "$dticks" -ge 0 ]; then
         v10=$(( dticks * 1000000 / (hz * dms) ))
@@ -3415,8 +3443,8 @@ node_menu(){
       2) add_hysteria2 || _drc=$? ;;
       3) add_hy2_obfs || _drc=$? ;;
       4) add_tuic || _drc=$? ;;
-      5) add_ss ;;
-      6) add_trojan ;;
+      5) add_ss || _drc=$? ;;
+      6) add_trojan || _drc=$? ;;
       7) add_vmess_ws_tls || _drc=$? ;;
       8) add_vless_ws_tls || _drc=$? ;;
       9) add_h2_reality || _drc=$? ;;
