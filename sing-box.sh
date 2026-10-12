@@ -75,7 +75,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.2"
+VERSION="V3.3"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -2780,6 +2780,9 @@ cleanup_legacy_nginx_conf(){
     [ "$NGINX_CONF_LEGACY" = "$NGINX_CONF" ] && return 0
     [ -f "$NGINX_CONF_LEGACY" ] || return 0
     rm -f "$NGINX_CONF_LEGACY" 2>/dev/null || true
+    if nginx_available && nginx -t >/dev/null 2>&1; then
+        nginx_reload >/dev/null 2>&1 || true
+    fi
 }
 
 nginx_available(){
@@ -2870,6 +2873,46 @@ nginx_reload(){
     return 1
 }
 
+_nginx_conf_candidates(){
+    printf '%s\n' \
+        "${NGINX_CONF%/*}" \
+        /etc/nginx/http.d \
+        /etc/nginx/conf.d \
+        /etc/nginx/sites-enabled \
+        /etc/nginx/vhosts.d
+}
+
+_nginx_place_verify(){
+    local cur="$1" out d target tmp
+    nginx_available || return 0
+    out="$(nginx -t 2>&1)"
+    printf '%s\n' "$out" | grep -qF "$NGINX_SITE_NAME" || return 0
+    tmp="${cur}.bak.$$"
+    cp -f "$cur" "$tmp" 2>/dev/null || return 0
+    for d in $(_nginx_conf_candidates); do
+        [ -n "$d" ] || continue
+        [ "$d" = "${cur%/*}" ] && continue
+        target="${d%/}/${NGINX_SITE_NAME}"
+        mkdir -p "$d" 2>/dev/null || continue
+        cp -f "$tmp" "$target" 2>/dev/null || continue
+        rm -f "$cur" 2>/dev/null || true
+        out="$(nginx -t 2>&1)"
+        if ! printf '%s\n' "$out" | grep -qF "$NGINX_SITE_NAME"; then
+            rm -f "$tmp" 2>/dev/null || true
+            NGINX_CONF="$target"
+            ok "订阅站点配置改放到 ${target}（原目录的 nginx 上下文不允许 map/server）"
+            return 0
+        fi
+        rm -f "$target" 2>/dev/null || true
+        cp -f "$tmp" "$cur" 2>/dev/null || true
+    done
+    rm -f "$tmp" 2>/dev/null || true
+    rm -f "$cur" 2>/dev/null || true
+    warn "nginx 各候选目录都放不下本站点配置，已删除 ${cur} 以免拖垮 nginx"
+    info "请确认 vhost 目录：grep -n 'include' /etc/nginx/nginx.conf"
+    return 1
+}
+
 write_nginx_conf(){
     need_root
     [ -n "$NGINX_CONF" ] || detect_nginx_dir
@@ -2924,6 +2967,7 @@ ${allowdeny}
     }
 }
 EOF
+    _nginx_place_verify "$ngxconf" || return 1
     return 0
 }
 
@@ -3391,6 +3435,23 @@ self_repair(){
         bad=1
     else
         echo "✓ 没有孤儿 inbound（配置与节点列表一致）"
+    fi
+    if [ -n "$NGINX_CONF" ] && [ -f "$NGINX_CONF_LEGACY" ] && [ "$NGINX_CONF_LEGACY" != "$NGINX_CONF" ]; then
+        warn "发现旧版遗留在 ${NGINX_CONF_LEGACY} 的订阅配置（该目录上下文不允许 map/server）"
+        cleanup_legacy_nginx_conf
+        echo "✓ 已清理；本站点配置的正确位置：${NGINX_CONF}"
+    else
+        echo "✓ nginx 订阅配置位置正常（${NGINX_CONF:-未探测到 nginx}）"
+    fi
+    if nginx_available; then
+        local _tout=""
+        if _tout="$(nginx -t 2>&1)"; then
+            echo "✓ nginx -t 配置校验通过"
+        else
+            warn "nginx -t 配置校验失败："
+            printf '%s\n' "$_tout" | sed 's/^/    /'
+            bad=1
+        fi
     fi
     install_sb_cmd
     chmod 0755 "$MENU" 2>/dev/null || true
