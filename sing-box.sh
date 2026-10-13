@@ -75,7 +75,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.6"
+VERSION="V3.8"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -3353,14 +3353,19 @@ sub_url_std(){
     printf 'http://%s:%s/sub/%s/std' "$SERVER_IP" "$port" "$tok"
 }
 sub_show_log(){
+    local elog="/var/log/nginx/error.log" logtext=""
     if [ -f "$LOGDIR/subhttp.log" ]; then
-        echo "  ${DIM}（Python 回退方案日志：${LOGDIR}/subhttp.log）${RESET}"
-        tail -n 40 "$LOGDIR/subhttp.log" 2>/dev/null
+        echo "  ${DIM}（Python 回退方案日志：${LOGDIR}/subhttp.log，含历史记录）${RESET}"
+        logtext="$(tail -n 40 "$LOGDIR/subhttp.log" 2>/dev/null)"
+        printf '%s\n' "$logtext"
     else
-        local elog="/var/log/nginx/error.log"
-        echo "  ${DIM}（nginx 方案）实时错误日志：${RESET}"
-        if [ -f "$elog" ]; then tail -n 40 "$elog" 2>/dev/null
-        else warn "未找到 nginx 错误日志（${elog}）"; fi
+        echo "  ${DIM}（nginx 方案）错误日志（最近 40 行，含历史记录）${RESET}"
+        if [ -f "$elog" ]; then
+            logtext="$(tail -n 40 "$elog" 2>/dev/null)"
+            printf '%s\n' "$logtext"
+        else
+            warn "未找到 nginx 错误日志（${elog}）"
+        fi
     fi
     echo
 
@@ -3388,7 +3393,8 @@ sub_show_log(){
         case "$t" in
             *"test is successful"*)
                 if [ "$problem" = 0 ]; then info "nginx 配置校验：通过"
-                else info "nginx 配置校验：通过（但上面提示的残留仍建议处理）"; fi ;;
+                else info "nginx 配置校验：通过（但上面提示的残留仍建议处理）"; fi
+                nginx_log_stale_hint "$logtext" "$elog" ;;
             *)
                 problem=1
                 hr
@@ -3402,6 +3408,33 @@ sub_show_log(){
     fi
     [ "$problem" = 0 ] && info "配置层面未发现问题"
     return 0
+}
+
+nginx_log_stale_hint(){
+    local text="$1" elog="$2" since=""
+    case "$text" in
+        *'map" directive is not allowed here'*) ;;
+        *) return 0 ;;
+    esac
+    hr
+    ok "上面那行 [emerg] 是**历史记录**，不是当前状态"
+    info "  依据：nginx -t 刚才是通过的。错误日志是追加写的，删掉坏配置不会删掉历史记录"
+    if [ -f "$NGINX_CONF_LEGACY" ]; then
+        info "  ${NGINX_CONF_LEGACY}（它的来源）现在**仍然存在**，清理一下更稳妥："
+        printf '    %srm -f %s && nginx -t%s\n' "$DIM" "$NGINX_CONF_LEGACY" "$RESET"
+    else
+        ok "  ${NGINX_CONF_LEGACY} 已不存在 —— 那行报错不会再产生"
+    fi
+    if [ -n "$elog" ] && [ -f "$elog" ]; then
+        since="$(grep -n 'signal process started' "$elog" 2>/dev/null | tail -n1 | cut -d: -f1)"
+        if [ -n "$since" ]; then
+            echo
+            info "最近一次 nginx 启动 / 重载之后的日志（更贴近当前状态）："
+            tail -n "+$since" "$elog" 2>/dev/null | head -n 20 \
+                | while IFS= read -r l; do echo "    $l"; done
+        fi
+    fi
+    hr
 }
 
 subhttp_menu(){
@@ -3427,6 +3460,12 @@ subhttp_menu(){
         if nginx_conf_legacy_present; then
             warn "存在旧版遗留配置：${NGINX_CONF_LEGACY}"
             info "它会让 nginx 校验失败（连带你的其它站点）→ 选 7 可一键清理"
+            hr
+        fi
+        if [ "${SUBHTTP_BACKEND:-}" = nginx ] && [ -n "${NGINX_CONF:-}" ] && [ ! -f "$NGINX_CONF" ]; then
+            warn "订阅站点配置缺失：${NGINX_CONF}"
+            info "nginx 校验通过 ≠ 订阅可用 —— 没有这份配置就没有 /sub/<token> 站点，端口没人监听"
+            info "常见原因：清理旧版残留时只删不写。选 1「启动 / 刷新订阅服务」即可写回"
             hr
         fi
         if [ "$st" = "on" ]; then
