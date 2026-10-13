@@ -129,11 +129,21 @@ sb help           # 帮助
 | 客户端 | 自动返回格式 |
 |---|---|
 | V2rayN / v2rayNG / Throne | base64 订阅（sing-box 专属协议带 `v2rayn://`，自动锁 sing-box 内核） |
-| 小火箭（Shadowrocket）/ Quantumult / Loon / Surge / Karing / Hiddify | base64 订阅（**纯标准链接**，识别率最高） |
+| 小火箭（Shadowrocket）/ Quantumult / Loon / Surge / Karing / Hiddify / v2rayA | base64 订阅（**纯标准链接**，识别率最高） |
 | Clash Verge / mihomo / Stash | YAML 配置（完整可直接用） |
 | Sing-box（SFI / SFA / SFM） | JSON 配置 |
 
+> **没被识别出来的客户端怎么办？** 用**通用订阅 URL**（订阅服务面板里会显示）：
+> ```
+> http://<服务器IP>:8088/sub/<token>/std
+> ```
+> 这个地址**不看 User-Agent**，固定返回纯标准链接。任何客户端（v2rayA、或者以后冒出来的新客户端）拿它都能正常导入，不会被 `v2rayn://` 卡住（V3.4）。
+>
+> 注意这份「纯标准链接」里**不含 `http2` / `http3`**（V3.5）：它们的分享链接带 path+query，Xray 系客户端（如 v2rayA）会判格式错误，一条坏链接可能让整份订阅导入失败。这两个协议请用 **sing-box JSON** 或 **Clash YAML** 导入。
+
 > **小火箭为什么单独一份？** v2rayN 的 `v2rayn://` 是**私有格式**，只有 v2rayN 认识。若把它喂给小火箭，小火箭只认得出 `vless://` / `vmess://` / `trojan://` / `ss://` 这几条标准链接，Hysteria2 / TUIC / AnyTLS / ShadowTLS / HTTP2 / HTTP3 整段解析不了——表现就是「订阅只导入了部分节点」。V2.7 起按 UA 给小火箭单独返回**纯标准链接**的订阅，不再被 `v2rayn://` 卡住。
+>
+> 而且这份订阅里的**证书放行参数也单独适配过**：Xray 系协议（vless-ws-tls / vmess-ws-tls / trojan）在小火箭版里用 `allowInsecure=1`，而不是 v2rayN 版的 `pcs=<指纹>`——因为**小火箭不认识 `pcs`**，不换的话导入后必须手动开「允许不安全」（V3.2）。
 
 订阅服务菜单还可：停止服务、复制 URL、改监听端口、设 IP 白名单、轮换访问令牌（旧 URL 立即失效）、看日志。
 
@@ -141,7 +151,7 @@ sb help           # 帮助
 
 > **绝不自动替你装 nginx。** 首次启动订阅服务时，脚本会让你在 **nginx** 和 **Python** 之间选一个；若选了 nginx 但本机没装，脚本会**先征求你同意（y/N）才安装**——因为装 HTTP 服务属于改动系统的动作（占端口、可能开机自启、影响你其它站点），必须你拍板。
 
-- **nginx（推荐，更省资源）**：C 事件驱动，常驻仅几 MB、空闲几乎零 CPU；若服务器本来就在跑 nginx，则零额外进程（只多一份站点配置）。跨发行版（apt/dnf/yum/apk/pacman/zypper）通用，systemd 与 openrc 都只是 `reload nginx`。UA 分流 + 令牌鉴权 + IP 白名单全部由 nginx 原生完成：`map` 按 User-Agent 选文件与 Content-Type；精确 `location = /sub/<token>` 做令牌校验（其它路径一律 404）；`allow/deny` 做来源限制。**停止只删配置**：选「停止订阅服务」时只移除我们那份 `/etc/nginx/conf.d/singbox-nat-sub.conf` 并 `reload`，不动 nginx 上其它站点。
+- **nginx（推荐，更省资源）**：C 事件驱动，常驻仅几 MB、空闲几乎零 CPU；若服务器本来就在跑 nginx，则零额外进程（只多一份站点配置）。跨发行版（apt/dnf/yum/apk/pacman/zypper）通用，systemd 与 openrc 都只是 `reload nginx`。UA 分流 + 令牌鉴权 + IP 白名单全部由 nginx 原生完成：`map` 按 User-Agent 选文件与 Content-Type；精确 `location = /sub/<token>` 做令牌校验（其它路径一律 404）；`allow/deny` 做来源限制。**停止只删配置**：选「停止订阅服务」时只移除我们那份站点配置并 `reload`，不动 nginx 上其它站点。站点配置的**目录按发行版现场探测**（Debian 系是 `conf.d`，Alpine 的 `conf.d` 属主上下文、必须放 `http.d`），写完还会实测 `nginx -t` 自检纠位（V2.6 / V3.3）。
 - **Python（回退）**：若你不想装 nginx、或本机装不上，选 Python。脚本用内置的自包含 Python 服务（systemd socket 激活，空闲零进程零内存），功能完全一致，只是资源占用略高于 nginx。
 
 > 想换实现方式？订阅服务菜单里有「切换实现方式」，切换后会自动按新方式重启，并清掉旧方案的残留（nginx 配置 / Python 单元），避免端口被两套方案抢。
@@ -223,7 +233,7 @@ TaskCanceledException_ctor_DefaultMessage
 所以：**改了脚本 / 换了新版后，必须执行 `sb update`，新逻辑才生效。** 主菜单在不一致时会给出提示（正常情况不显示）：
 
 ```
-脚本更新   已装 V3.0，当前源码 V3.1
+脚本更新   已装 V3.4，当前源码 V3.5
 生效方式   菜单跑的是 menu.sh 快照，执行 sb update 后新逻辑才生效
 ```
 
@@ -258,6 +268,21 @@ v2rayN 同时挂 Xray / sing-box / mihomo 三个内核，标准链接不携带�
 因为订阅服务此前把 v2rayN 的私有格式 `v2rayn://` 也发给了小火箭，而小火箭不认识这个 scheme，只认 `vless://` / `vmess://` / `trojan://` / `ss://` 这类标准链接，其余整段被丢弃。V2.7 起订阅服务按 UA 分流：识别到小火箭就给**纯标准链接**的订阅（`hysteria2://` / `tuic://` / `anytls://` / `http://` 等），能导入多少是多少，不再被 `v2rayn://` 卡住。
 > 升级后需要**重启一次订阅服务**（主菜单 9 → 订阅服务 → 1. 启动 / 刷新订阅服务），新的分流规则才会生效（nginx 后端尤其如此，它读的是磁盘上的站点配置）。也可在小火箭里直接改用「9 → 5. 小火箭订阅」的地址。
 
+**Q：为什么导入小火箭后，有些节点要自己开「TLS 允许不安全」才能连？**
+因为这些节点用的是**自签证书**（CN = 服务器 IP），客户端默认会以「证书不受信任」拒绝连接，必须让它知道要放行。而"放行"有两种写法，取决于客户端生态：
+
+| 写法 | 谁认 | 用在哪些协议 |
+|---|---|---|
+| `pcs=<64位hex指纹>` | Xray / v2rayN（新版 Xray 移除 `allowInsecure` 后的官方替代品） | vless-ws-tls / vmess-ws-tls / trojan |
+| `allowInsecure=1` | 通用写法，**小火箭只认这个** | — |
+| `insecure=1` | sing-box 内核（Hiddify / NekoBox / Karing） | hy2 / tuic / anytls / naive / http2 / http3 |
+
+**小火箭不认识 `pcs`**（那是 Xray 私有参数），会把它当未知参数直接忽略 → 仍按严格证书校验走 → 自签证书必然失败 → 你只能手动去开「允许不安全」。而带 `insecure=1` 的 sing-box 系协议小火箭认识，导入后就是好的，**所以是「有些」而不是「全部」**。
+
+**V3.2 起**：小火箭订阅改用 `allowInsecure=1`（并同时带上 `insecure=1`，兼顾 sing-box 内核的客户端）。v2rayN 那份订阅**保持 `pcs` 不变**——两者绝不能同时带，v2rayN 会把 `allowInsecure` 原样写进 Xray 配置，新版 Xray 见到它会**直接拒绝启动**。
+> 升级后重启一次订阅服务（主菜单 9 → 订阅服务 → 1）重新拉取即可，不用再手动开开关。
+> 注意：手动从「9 → 节点链接」复制单条链接给小火箭时仍是 `pcs` 版本（那份是给 v2rayN 看的），要省事就用「9 → 5 小火箭订阅」。
+
 **Q：节点名全是 `Hysteria2` 这种，分不清哪条是哪台机器的？**
 V2.7 起默认命名是 `<国家/地区> <协议类型>`（如 `中国香港 Hysteria2`），多台机器混进同一订阅也能区分。想自定义前缀见上面的「节点命名」一节。
 
@@ -266,6 +291,56 @@ V2.7 起默认命名是 `<国家/地区> <协议类型>`（如 `中国香港 Hys
 - `0 ms`：计时用了 GNU 专有的 `date +%s%3N`，BusyBox 的 date 不报错、只把 `%3N` 原样输出，导致差值恒为 0。V2.9 起改用三级回退的 `now_ms()`（GNU `%N` → `/proc/uptime` → `date +%s`）。
 - 卡死：V2.9 先改用 `curl -I --connect-timeout 2 --max-time 3`，但**只修好了一半**——如果卡在**本机 DNS 解析**里，curl 自己的超时是无效的（`getaddrinfo()` 是同步阻塞调用，curl 的定时器根本没机会跑），而 BusyBox 的 `timeout` 也未必收得掉。典型现象是**每次都卡在不同域名**（一次第 7 个 `gateway.icloud.com`、一次第 10 个 `www.bing.com`）。
   **V3.0 起**在探测外面套了一层纯 bash 看门狗 `run_with_timeout`：后台起进程 + 到点 `kill -9`。SIGKILL 不可被捕获/阻塞，卡在 DNS 里也照杀，**单个域名最多耗 5 秒**；并且连续 3 个域名不可达就直接中止测速，提示你检查 `cat /etc/resolv.conf`，不再白等 12 个域名。
+
+**Q：`nginx -t` 报 `"map" directive is not allowed here in /etc/nginx/conf.d/singbox-nat-sub.conf:4`，而且 nginx 起不来了？**
+这是**配置文件放错目录**，不是内容写错。`map` 和 `server` 只允许出现在 `http { }` 里，而各发行版 `conf.d` 的**上下文**不一样：
+
+| 发行版 | `conf.d` 的上下文 | 站点配置该放哪 |
+|---|---|---|
+| Debian / Ubuntu / CentOS / Arch | 在 `http { }` 内 | `conf.d/` |
+| **Alpine** | **主上下文（`http { }` 之外）** | **`http.d/`** |
+
+Alpine 官方 nginx.conf 里那句注释写得很直白：`# Include files with config snippets into the root context.` + `include /etc/nginx/conf.d/*.conf;`（在 `http{}` 之外）。所以放 `map` 进去就是非法的。
+
+**马上恢复 nginx（一条命令）**：
+```sh
+rm -f /etc/nginx/conf.d/singbox-nat-sub.conf && nginx -t && (nginx -s reload || rc-service nginx restart)
+```
+`nginx -t` 通过后，`sb update` 更新到 V3.3，再进一次菜单即可——V3.3 开机就会清掉这个旧位置的残留，并且写完配置会**实测 `nginx -t` 自动纠位**，放不下就删掉自己，不会再让 nginx 起不来。
+
+**Q：v2rayA 导入报 `格式错误的 http 链接 … expected http-proxy://[user:pass@]host:port`？**
+这是 `http2` / `http3` 两个协议的分享链接格式问题，**V3.5 已修**（`sb update` 后重新拉订阅即可）。
+
+v2rayA 的解析器只接受 `http-proxy://[user:pass@]host:port` 这种**裸形式**，不接受带 path 或 query 的写法；而脚本给的这两条是：
+```
+http://user:pass@IP:port/?protocol=https&sni=…&insecure=1
+                       └─ path + query ─┘
+```
+于是被它判为格式错误。**注意：不能改成它要的那个形式**——`http-proxy://host:port` 是**明文** HTTP 代理，表达不了我们带 TLS 的 HTTP 入站，照它导进去也连不上。
+
+所以 V3.5 的处理是：导出**纯标准链接订阅**（小火箭 / 通用订阅，也就是 v2rayA 用的那份）时，**直接跳过 http2 / http3 这两条**，不让一条坏链接把整份订阅的导入搞失败。这两个协议改用 **sing-box JSON** 或 **Clash YAML** 导入即可（两者都支持带 TLS 的 HTTP 代理）。
+
+**Q：v2rayA 报 `无法从 x 获取订阅：could not fetch through the selected proxy mode (…: EOF); set the mode to direct or start the core`？**
+**这个不是订阅的问题，也跟内核无关**——它发生在「下载订阅」这一步，那时还完全没有节点、协议、内核参与。v2rayA 只是去 HTTP 下载一个文本文件，而它把这次下载也**走了自己的代理模式**，那一刻核心没启动（或没连上），连接被直接断开，所以是 `EOF`（连接建立后被关掉），不是 404 也不是超时。
+
+**改法**：到 v2rayA 的 **设置 → 「解析订阅链接 / 更新时优先使用」→ 选「直连」**（对应报错里说的 `set the mode to direct`）；或者先把核心启动起来再更新订阅。
+
+**怎么确认不是订阅服务的问题**：在跑 v2rayA 的那台机器上直接 curl：
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' "http://<服务器IP>:8088/sub/<token>/std"
+```
+返回 `200` 就说明订阅服务一切正常，问题 100% 在 v2rayA 的取订阅方式上。
+
+**Q：v2rayA 只认出部分节点 / 少了几个协议？**
+1. **格式问题（V3.4 已修）**：主订阅 URL 按 UA 分流，**兜底那一档给的是 v2rayN 私有格式 `v2rayn://`**。v2rayA 是 Go 写的 Web 客户端，拉订阅时带的 UA 没有公开约定，所以会落到兜底档，拿到 `v2rayn://` 却**不认识这个 scheme**，只认得出其中标准链接的那几条 → 「只导入了部分节点」。
+   **解决**：用**通用订阅 URL**（订阅服务面板、「9 → 5 小火箭 / 通用订阅」里都会显示）：
+   ```
+   http://<服务器IP>:8088/sub/<token>/std
+   ```
+   这个地址**不看 UA**，固定返回纯标准链接，v2rayA 能认几个认几个，不会整段解析失败。
+2. **协议问题（无法绕过）**：v2rayA 用的是 **Xray 系内核**（`v2raya_core`，Xray-core 的分支），官方支持 VMess / VLESS / SS / Trojan / **Hysteria2 / TUIC / AnyTLS** / Juicity / WireGuard / HTTP(S)。本脚本 16 个协议里，它**不支持 NaiveProxy（`naive`）和 ShadowTLS**——这两个不会出现在它的节点列表里，属正常现象，不是订阅坏了。
+
+> 顺带一提：**判断标准是「客户端有没有标准链接之外的自定义参数」**。凡是只认标准链接的客户端（小火箭、Quantumult、Loon、Surge、Karing、Hiddify、v2rayA……），拿到 `v2rayn://` 都会「只认出部分节点」——这个坑 V2.7（小火箭）和 V3.4（v2rayA）各踩过一次，所以现在统一给了上面那个通用地址兜底。
 
 **Q：测速时刷屏 `menu.sh: fork: retry: Resource temporarily unavailable`？**
 这是**系统进程数（pids）被占满、fork 直接失败**，不是脚本报错。V3.0 的看门狗写法有缺陷：`( sleep N; kill ) &` 里 kill 只能杀掉那个子 shell，子 shell 里的 `sleep` 会变成**孤儿**继续活满 N 秒；12 个候选域名几秒内跑完，孤儿能攒到十几个，在小 pids 限额的小鸡上就把进程数打满了。
@@ -328,6 +403,40 @@ V2.7 的一个 bug：节点记录里用了一个叫 `label` 的字段，而 `lab
 ---
 
 ## 版本说明
+
+### V3.5
+- **修「导入 v2rayA 报 `格式错误的 http 链接 … expected http-proxy://[user:pass@]host:port`」**。
+  - 原因：`http2` / `http3` 两个协议的分享链接是 `http://user:pass@host:port/?protocol=https&sni=…` 这种**带 path + query** 的形式，只有 sing-box 系客户端认识。v2rayA 的解析器（`v2raya_core` 是 Xray-core 的分支）**只接受 `http-proxy://[user:pass@]host:port`**，见到 path/query 直接判格式错误——而**一条坏链接就可能让整份订阅导入失败**。
+  - 它要求的 `http-proxy://host:port` 是**明文** HTTP 代理，表达不了我们带 TLS 的 HTTP 入站，所以不能改成它那个形式（改了导进去也连不上）。
+  - 现在新增开关 `LINK_SKIP_HTTP_PROXY`：导出**纯标准链接订阅**（小火箭 / 通用订阅，也就是 v2rayA 用的那份）时跳过这两条。其它协议一条不动，v2rayN 那份订阅也不受影响。
+  - `http2` / `http3` 仍可通过 **sing-box JSON** 和 **Clash YAML** 正常使用（两者都支持带 TLS 的 HTTP 代理）。
+
+### V3.4
+- **新增「通用订阅」URL `/sub/<token>/std`，修「v2rayA 只认出部分节点」**。
+  - 原因：主订阅 URL 是按 UA 分流的，而**兜底那一档给的是 v2rayN 私有格式 `v2rayn://`**（为了让它自动锁 sing-box 内核）。任何我们没枚举、UA 也不固定的客户端都会落到这一档，而它们不认识 `v2rayn://`，只认得出其中标准链接的那几条 —— 表现就是「订阅只导入了部分节点」。v2rayA 正是这种情况（它是 Go 写的 Web 客户端，拉订阅时的 UA 没有公开约定，靠 UA 猜不可靠）。
+  - 现在多了一个**与 UA 无关**的地址：`http://<服务器IP>:8088/sub/<token>/std`，固定返回 16 个协议的**纯标准链接**。订阅服务面板、「5. 小火箭 / 通用订阅」子菜单里都会显示它。
+  - 同时把 `v2raya` 加进标准链接的 UA 名单（能命中就命中，命不中就用上面的通用地址）。
+  - **原有分流一行没动**：v2rayN 仍拿 `v2rayn://`（不回归），Clash / sing-box / 小火箭等照旧。
+
+### V3.3
+- **修 Alpine 上 `nginx: [emerg] "map" directive is not allowed here in /etc/nginx/conf.d/singbox-nat-sub.conf:4`**（会让整台 nginx 的 `nginx -t` 永久失败，连带用户自建的其它站点一起遭殃）。
+  - 原因：`map` / `server` 只允许出现在 `http { }` 里。**Alpine 官方 nginx.conf 把 `conf.d` 放在主上下文**——
+    ```nginx
+    # Include files with config snippets into the root context.
+    include /etc/nginx/conf.d/*.conf;      # ← 在 http{} 之外！
+    http { include /etc/nginx/http.d/*.conf; }   # ← 真正的 vhost 目录
+    ```
+    所以站点配置必须写进 `http.d`（Debian 系才是 `conf.d`）。脚本自 V2 起就会现场读 nginx.conf 判断，**用旧版残留的 conf.d 文件不会被自动清掉**，请 `sb update` 后进一次菜单。
+  - **新增写入后实测自检 + 自动纠位**：写完立刻跑 `nginx -t`，若报错指向本文件，就依次换 `http.d` / `conf.d` / `sites-enabled` / `vhosts.d` 重试，哪个目录校验通过就留在哪；**全部都不行就删掉自己这份并提示**——宁可订阅服务不生效，也绝不把用户的 nginx 留成起不来的状态。报错若与本文件无关（用户自己其它站点有问题），则完全不碰。
+  - 开机进菜单时清理旧版残留后，若 `nginx -t` 已能通过会**顺手 reload 一次**，避免出现「校验好了、跑着的实例还是坏配置」的错位状态。
+  - 「自检 / 修复」（主菜单 11）新增 nginx 站点配置位置检查 + `nginx -t` 结果展示。
+
+### V3.2
+- **修「导入小火箭后有些节点要手动开『允许不安全』」**。
+  - 原因：脚本用自签证书，客户端必须被明确告知「放行这个证书」。Xray 系协议（vless-ws-tls / vmess-ws-tls / trojan）链接里写的是 `pcs=<证书指纹>`（新版 Xray 移除 `allowInsecure` 后的官方替代），但 **`pcs` 是 Xray 私有参数，小火箭不认识**，会当未知参数忽略 → 仍按严格校验 → 连不上。
+  - 现在 `link_for_node` 新增 `LINK_ALLOW_INSECURE` 开关：导出小火箭订阅时打开，改用 `&allowInsecure=1&insecure=1`（前者给小火箭，后者给 sing-box 内核的 Hiddify / NekoBox / Karing，各自只认自己那个）。
+  - **v2rayN 那份订阅保持 `pcs` 不变**——两者绝不能同时带：v2rayN 会把 `allowInsecure` 写进 Xray 配置，而新版 Xray 见到它会直接拒绝启动。开关用 `local` 限定作用域，函数返回即失效，不会污染其它订阅。
+  - vmess 是 base64 JSON，其证书放行字段同步用 `{"allowInsecure":true}` 替代 `pcs`。
 
 ### V3.1
 - **修复 SNI 优选刷屏 `fork: retry: Resource temporarily unavailable`（系统 pids 被占满）。**
