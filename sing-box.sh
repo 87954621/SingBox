@@ -75,7 +75,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.5"
+VERSION="V3.6"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -2790,13 +2790,19 @@ detect_nginx_dir(){
 }
 
 cleanup_legacy_nginx_conf(){
-    [ -n "$NGINX_CONF" ] || detect_nginx_dir
+    [ -n "${NGINX_CONF:-}" ] || detect_nginx_dir
     [ "$NGINX_CONF_LEGACY" = "$NGINX_CONF" ] && return 0
     [ -f "$NGINX_CONF_LEGACY" ] || return 0
     rm -f "$NGINX_CONF_LEGACY" 2>/dev/null || true
     if nginx_available && nginx -t >/dev/null 2>&1; then
         nginx_reload >/dev/null 2>&1 || true
     fi
+}
+
+nginx_conf_legacy_present(){
+    [ -n "${NGINX_CONF_LEGACY:-}" ] || return 1
+    [ "${NGINX_CONF_LEGACY}" = "${NGINX_CONF:-}" ] && return 1
+    [ -f "$NGINX_CONF_LEGACY" ]
 }
 
 nginx_available(){
@@ -3346,6 +3352,58 @@ sub_url_std(){
     tok="$(sub_token)"; port="${SUBHTTP_LISTEN:-8088}"
     printf 'http://%s:%s/sub/%s/std' "$SERVER_IP" "$port" "$tok"
 }
+sub_show_log(){
+    if [ -f "$LOGDIR/subhttp.log" ]; then
+        echo "  ${DIM}（Python 回退方案日志：${LOGDIR}/subhttp.log）${RESET}"
+        tail -n 40 "$LOGDIR/subhttp.log" 2>/dev/null
+    else
+        local elog="/var/log/nginx/error.log"
+        echo "  ${DIM}（nginx 方案）实时错误日志：${RESET}"
+        if [ -f "$elog" ]; then tail -n 40 "$elog" 2>/dev/null
+        else warn "未找到 nginx 错误日志（${elog}）"; fi
+    fi
+    echo
+
+    local problem=0 t a=""
+    if nginx_conf_legacy_present; then
+        problem=1
+        hr
+        warn "发现旧版遗留的订阅配置：${NGINX_CONF_LEGACY}"
+        info "旧版把这个文件写死在 /etc/nginx/conf.d/ 下；部分发行版（Alpine）该目录"
+        info "属于 nginx 主上下文，放 map/server 会让【整台 nginx】校验失败，"
+        info "连带你自己建的站点一起起不来。当前版本已改用 ${NGINX_CONF:-未探测到}。"
+        echo
+        read -r -p "  现在删除这份残留并重载 nginx？[Y/n] " a || a=""
+        case "$a" in
+            n|N|no|NO|No|nO)
+                info "已跳过。想手动清理就执行：rm -f ${NGINX_CONF_LEGACY}" ;;
+            *)
+                cleanup_legacy_nginx_conf
+                ok "已删除残留：${NGINX_CONF_LEGACY}"
+                problem=0 ;;
+        esac
+    fi
+    if nginx_available; then
+        t="$(nginx -t 2>&1)"
+        case "$t" in
+            *"test is successful"*)
+                if [ "$problem" = 0 ]; then info "nginx 配置校验：通过"
+                else info "nginx 配置校验：通过（但上面提示的残留仍建议处理）"; fi ;;
+            *)
+                problem=1
+                hr
+                warn "nginx 配置校验未通过："
+                printf '%s\n' "$t" | while IFS= read -r l; do echo "    $l"; done
+                case "$t" in
+                    *"$NGINX_SITE_NAME"*)
+                        info "报错涉及本站点配置 → 主菜单「自检 / 修复」可一键处理" ;;
+                esac ;;
+        esac
+    fi
+    [ "$problem" = 0 ] && info "配置层面未发现问题"
+    return 0
+}
+
 subhttp_menu(){
     while :; do
         clear
@@ -3366,6 +3424,11 @@ subhttp_menu(){
         kv "访问令牌" "${DIM}${tok:0:8}…${RESET}  ${DIM}(完整值见订阅 URL)${RESET}"
         [ -n "$SUBHTTP_ALLOW_IPS" ] && kv "IP 白名单" "$SUBHTTP_ALLOW_IPS" || kv "IP 白名单" "${DIM}未限制（靠令牌保护）${RESET}"
         hr
+        if nginx_conf_legacy_present; then
+            warn "存在旧版遗留配置：${NGINX_CONF_LEGACY}"
+            info "它会让 nginx 校验失败（连带你的其它站点）→ 选 7 可一键清理"
+            hr
+        fi
         if [ "$st" = "on" ]; then
             echo "  ${BOLD}订阅 URL —— 客户端里粘贴这一个即可${RESET}"
             echo "  ${CYAN}$(sub_url)${RESET}"
@@ -3414,14 +3477,7 @@ subhttp_menu(){
             sub_rotate_token
             ok "令牌已轮换，请重新复制订阅 URL"; pause ;;
           7)
-            if [ -f "$LOGDIR/subhttp.log" ]; then
-                echo "  ${DIM}（Python 回退方案日志）${RESET}"
-                tail -n 40 "$LOGDIR/subhttp.log"
-            else
-                echo "  ${DIM}（nginx 方案）实时错误日志：${RESET}"
-                local elog="/var/log/nginx/error.log"
-                [ -f "$elog" ] && tail -n 40 "$elog" || warn "未找到 nginx 错误日志（${elog}）"
-            fi
+            sub_show_log
             pause ;;
           8)
             local _was="$st"
@@ -4469,7 +4525,7 @@ sub_menu(){
         echo "  ${GREEN}●${RESET} 订阅服务已开启，客户端填这一个地址即可："
         echo "    ${CYAN}$(sub_url 2>/dev/null)${RESET}"
     else
-        echo "  ${DIM}○ 订阅服务未开启 —— 开启后可用「一个 URL 适配所有客户端」（见 6）${RESET}"
+        echo "  ${DIM}○ 订阅服务未开启 —— 开启后可用「一个 URL 适配所有客户端」（见 7，或主菜单 10）${RESET}"
     fi
     echo
     echo "1. 一键复制全部链接（OSC52）"
@@ -4478,7 +4534,7 @@ sub_menu(){
     echo "4. 查看 / 复制 v2rayN 订阅（自动指定 sing-box 内核）"
     echo "5. 查看 / 复制 小火箭 / 通用订阅（纯标准链接，v2rayA 等也用它）"
     echo "6. 查看 sing-box 配置"
-    echo "7. 订阅服务（开启后一个 URL 走天下，按客户端自动适配格式）"
+    echo "7. 订阅服务（后端 / 订阅 URL / 日志 —— 主菜单 10 也是它）"
     echo "0. 返回"
     read -r -p "请选择： " x || x=""
     case "$x" in
@@ -4651,7 +4707,7 @@ menu(){
         local _subres="$(sub_resource 2>/dev/null)"
         kv "订阅服务" "$(status_dot 1) ${GREEN}运行中${RESET}  ${DIM}:${SUBHTTP_LISTEN:-8088}${RESET}  ${_subres}"
     else
-        kv "订阅服务" "$(status_dot 0) ${DIM}未开启${RESET}  ${DIM}(菜单 9 → 6)${RESET}"
+        kv "订阅服务" "$(status_dot 0) ${DIM}未开启${RESET}  ${DIM}(菜单 10 开启)${RESET}"
     fi
     kv "系统" "${OS} ${VER}"
     kv "服务器" "${COUNTRY_NAME:-未知}${COUNTRY_CODE:+ ($COUNTRY_CODE)}"
@@ -4684,6 +4740,7 @@ menu(){
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "服务管理（启停 / 重启 / 配置检查）"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "sing-box 管理（内核版本 / 升级 / 重装）"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "订阅与节点链接"; i=$((i+1))
+    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "订阅服务（后端 / 订阅 URL / 日志）"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "系统信息"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "自检 / 修复"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "完全卸载（内核 + 配置 + 节点 + 本脚本）"; i=$((i+1))
@@ -4736,10 +4793,11 @@ menu(){
       7) service_menu ;;
       8) singbox_menu ;;
       9) sub_menu ;;
-      10) clear; system_info; pause ;;
-      11) self_repair ;;
-      12) uninstall ;;
-      13) check_update ;;
+      10) subhttp_menu ;;
+      11) clear; system_info; pause ;;
+      12) self_repair ;;
+      13) uninstall ;;
+      14) check_update ;;
       0) exit 0 ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
