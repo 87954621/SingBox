@@ -75,7 +75,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.3"
+VERSION="V3.4"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -2570,6 +2570,7 @@ write_subserver(){
 #
 # 职责：监听一个端口，按客户端 User-Agent 返回对应格式的订阅内容。
 #   - 路径 /sub/<TOKEN> 等任意带正确 token 的路径才会返回内容
+#   - 路径 /sub/<TOKEN>/std 固定返回纯标准链接（不看 UA，给 v2rayA 等用）
 #   - 其它路径一律 404，避免被扫描器发现
 #   - 可选 IP 白名单
 # 全部数据从磁盘文件读取，本进程不解析节点，逻辑极简、几乎不会出错。
@@ -2596,7 +2597,9 @@ SROCKET = lambda: readf(os.path.join(SUBDIR, "shadowrocket_subscribe.txt"))
 
 # 只认标准链接、不认识 v2rayn:// 的客户端 UA。
 # 用词边界而不是简单子串，避免 "balloon" 这类词误命中 "loon"。
-STD_LINK_UA = re.compile(r"\b(shadowrocket|quantumult|loon|surge|surfboard|karing|hiddify|nekobox|nekoray)\b")
+# v2raya 也在这里：它是 Go 写的 Web 客户端，拉订阅时 UA 没有公开约定，
+# 能命中就命中；命不中也不影响 —— 它还能用 /sub/<token>/std 这个通用地址。
+STD_LINK_UA = re.compile(r"\b(shadowrocket|quantumult|loon|surge|surfboard|karing|hiddify|nekobox|nekoray|v2raya)\b")
 
 class H(http.server.BaseHTTPRequestHandler):
     server_version = "singbox-nat-sub/1.0"
@@ -2634,7 +2637,12 @@ class H(http.server.BaseHTTPRequestHandler):
 
         ua = (self.headers.get("User-Agent") or "").lower()
         # UA 分流：不同客户端要不同格式。
-        if "clash" in ua or "mihomo" in ua or "verge" in ua or "stash" in ua:
+        # /sub/<TOKEN>/std —— 通用订阅：**不看 UA**，固定纯标准链接。
+        # 给 v2rayA 这类我们没枚举、UA 也不固定的客户端兜底（否则它们会落到
+        # 下面的 else，拿到 v2rayN 私有格式 v2rayn:// → 只认出部分节点）。
+        if "std" in parts:
+            body, ctype = SROCKET(), "text/plain; charset=utf-8"
+        elif "clash" in ua or "mihomo" in ua or "verge" in ua or "stash" in ua:
             body, ctype = CLASH(), "text/yaml; charset=utf-8"
         elif "sing-box" in ua or "singbox" in ua or "sfa" in ua or "sfi" in ua or "sfm" in ua:
             body, ctype = SBJSON(), "application/json; charset=utf-8"
@@ -2941,7 +2949,7 @@ map \$http_user_agent \$sb_sub_file {
     default                            "v2rayn_subscribe.txt";
     "~*(clash|mihomo|verge|stash)"     "clash.yaml";
     "~*(sing-box|singbox|sfa|sfi|sfm)" "singbox_client.json";
-    "~*\\b(shadowrocket|quantumult|loon|surge|surfboard|karing|hiddify|nekobox|nekoray)\\b" "shadowrocket_subscribe.txt";
+    "~*\\b(shadowrocket|quantumult|loon|surge|surfboard|karing|hiddify|nekobox|nekoray|v2raya)\\b" "shadowrocket_subscribe.txt";
 }
 server {
     listen      ${port};
@@ -2955,6 +2963,19 @@ ${allowdeny}
         types {
             text/yaml            yaml;
             application/json     json;
+            text/plain           txt;
+        }
+        default_type text/plain;
+        add_header Subscription-Userinfo "upload=0; download=0; total=0; expire=0" always;
+        add_header Profile-Update-Interval "24" always;
+        add_header Cache-Control "no-cache, max-age=300" always;
+    }
+    # 通用订阅：固定返回纯标准链接，**不走 UA 分流**。
+    # 给 v2rayA 这类没枚举、UA 也不固定的客户端兜底（否则它们会命中 default，
+    # 拿到 v2rayN 私有格式 v2rayn:// → 只认出部分节点）。
+    location = /sub/${tok}/std {
+        alias ${SUBDIR}/shadowrocket_subscribe.txt;
+        types {
             text/plain           txt;
         }
         default_type text/plain;
@@ -3172,8 +3193,9 @@ sub_port_hint(){
     fi
     printf '  %s云服务器还要在控制台「安全组 / 防火墙」里放行 TCP %s%s\n' "$DIM" "$port" "$RESET"
     if [ "$ok_local" = 1 ]; then
-        printf '  %s若客户端仍报超时，按上面放行后再试；URL：%s%s\n' \
-            "$DIM" "$(sub_url 2>/dev/null)" "$RESET"
+        printf '  %s若客户端仍报超时，按上面放行后再试%s\n' "$DIM" "$RESET"
+        printf '  %s订阅 URL：      %s%s\n' "$DIM" "$(sub_url 2>/dev/null)" "$RESET"
+        printf '  %s通用订阅 URL：  %s%s\n' "$DIM" "$(sub_url_std 2>/dev/null)" "$RESET"
     fi
 }
 
@@ -3312,6 +3334,12 @@ sub_url(){
     tok="$(sub_token)"; port="${SUBHTTP_LISTEN:-8088}"
     printf 'http://%s:%s/sub/%s' "$SERVER_IP" "$port" "$tok"
 }
+
+sub_url_std(){
+    local tok port
+    tok="$(sub_token)"; port="${SUBHTTP_LISTEN:-8088}"
+    printf 'http://%s:%s/sub/%s/std' "$SERVER_IP" "$port" "$tok"
+}
 subhttp_menu(){
     while :; do
         clear
@@ -3336,6 +3364,10 @@ subhttp_menu(){
             echo "  ${BOLD}订阅 URL —— 客户端里粘贴这一个即可${RESET}"
             echo "  ${CYAN}$(sub_url)${RESET}"
             echo "  ${DIM}按客户端 UA 自动适配：Clash→YAML / v2rayN→base64 / sing-box→JSON / 小火箭→标准链接${RESET}"
+            echo
+            echo "  ${BOLD}通用订阅 URL —— 没被识别出来的客户端用这个${RESET}"
+            echo "  ${CYAN}$(sub_url_std)${RESET}"
+            echo "  ${DIM}不看 UA，固定返回纯标准链接；v2rayA 等用它，不会被 v2rayn:// 卡住${RESET}"
         else
             echo "  ${DIM}当前未运行：选 1 启动后，这里会出现可复制的订阅地址${RESET}"
         fi
@@ -4438,7 +4470,7 @@ sub_menu(){
     echo "2. 显示二维码（单个 / 全部）"
     echo "3. 查看 / 复制 Clash 配置（含 mihomo）"
     echo "4. 查看 / 复制 v2rayN 订阅（自动指定 sing-box 内核）"
-    echo "5. 查看 / 复制 小火箭订阅（纯标准链接，识别率最高）"
+    echo "5. 查看 / 复制 小火箭 / 通用订阅（纯标准链接，v2rayA 等也用它）"
     echo "6. 查看 sing-box 配置"
     echo "7. 订阅服务（开启后一个 URL 走天下，按客户端自动适配格式）"
     echo "0. 返回"
@@ -4494,6 +4526,7 @@ shadowrocket_sub_menu(){
     echo "1. 查看单条链接（纯标准格式）"
     echo "2. 查看订阅原文（base64）"
     echo "3. 复制订阅到剪贴板"
+    echo "4. 显示「通用订阅」URL（v2rayA 等未识别客户端用）"
     echo "0. 返回"
     read -r -p "请选择： " q || q=""
     case "$q" in
@@ -4516,6 +4549,19 @@ shadowrocket_sub_menu(){
         export_shadowrocket >/dev/null 2>&1
         if [ ! -s "$SUBDIR/shadowrocket_subscribe.txt" ]; then warn "暂无节点"; pause; continue; fi
         copy_text "$(cat "$SUBDIR/shadowrocket_subscribe.txt")"
+        pause ;;
+      4)
+        if [ "$(sub_status 2>/dev/null)" != "on" ]; then
+            warn "订阅服务未开启 —— 请到「7. 订阅服务」里先启动它"
+            pause; continue
+        fi
+        echo
+        info "把这个地址填进 v2rayA（或其它没被识别出来的客户端）："
+        echo "  ${CYAN}$(sub_url_std)${RESET}"
+        echo "  ${DIM}不看 UA，固定返回纯标准链接，不会被 v2rayn:// 卡住${RESET}"
+        echo
+        echo "  ${DIM}提示：v2rayA 用 xray 系内核，不支持 naive（NaiveProxy）和${RESET}"
+        echo "  ${DIM}ShadowTLS，这两个协议不会出现在它的节点列表里，属正常现象。${RESET}"
         pause ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
