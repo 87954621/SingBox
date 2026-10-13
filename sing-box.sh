@@ -75,7 +75,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.4"
+VERSION="V3.5"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -2000,6 +2000,11 @@ link_for_node(){
           *) uot_q="&udp-over-tcp=true&udp-over-tcp-version=2" ;;
         esac
     fi
+    if [ "${LINK_SKIP_HTTP_PROXY:-0}" = "1" ]; then
+        case "$type" in
+          http2|http3) return 1 ;;
+        esac
+    fi
     case "$type" in
       vless-reality)
         [ -n "$extra" ] && flow_q="&flow=$(urlencode "$extra")"
@@ -2368,6 +2373,7 @@ export_shadowrocket(){
     : >"$plain"
     local row link
     local LINK_ALLOW_INSECURE=1
+    local LINK_SKIP_HTTP_PROXY=1
     while IFS= read -r row; do
         link="$(link_for_node "$row" 2>/dev/null)" || link=""
         [ -n "$link" ] && printf '%s\n' "$link" >>"$plain"
