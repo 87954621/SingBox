@@ -15,7 +15,11 @@
 ```bash
 bash sing-box.sh
 ```
-# 方式二：curl 一键安装（把 <脚本下载地址> 换成你的实际地址）
+# 方式二：一键安装（把 <脚本下载地址> 换成你的实际地址）
+```bash
+wget -qO- https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh | bash
+```
+or
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh)
 ```
