@@ -60,6 +60,8 @@ _self_fix_crlf(){
 }
 
 PUB4=""; PUB6=""; LOCAL4=""; SERVER_IP="127.0.0.1"
+ADVERTISE_IP="${ADVERTISE_IP:-}"
+ADVERTISE_PORT_BASE="${ADVERTISE_PORT_BASE:-}"
 NAT_HINT="未检测"; UDP_HINT="未检测"
 UDP_OK="1"; UDP_CHECKED=0
 COUNTRY_CODE=""; COUNTRY_NAME=""
@@ -75,7 +77,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.8"
+VERSION="V3.9.1"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -478,6 +480,200 @@ get_ip(){
     fi
     _IP_CACHED=1
 }
+
+advertise_ip(){
+    if [ -n "${ADVERTISE_IP:-}" ]; then printf '%s' "$ADVERTISE_IP"
+    else printf '%s' "${SERVER_IP:-127.0.0.1}"; fi
+}
+advertise_port(){
+    local p="$1"
+    [ -n "${ADVERTISE_PORT_BASE:-}" ] || { printf '%s' "$p"; return 0; }
+    case "$p" in ''|*[!0-9]*) printf '%s' "$p"; return 0 ;; esac
+    case "${ADVERTISE_PORT_BASE}" in ''|*[!0-9]*) printf '%s' "$p"; return 0 ;; esac
+    local off=$(( p - MIN_TCP ))
+    [ "$off" -ge 0 ] || { printf '%s' "$p"; return 0; }
+    printf '%s' "$(( ADVERTISE_PORT_BASE + off ))"
+}
+advertise_active(){
+    [ -n "${ADVERTISE_IP:-}" ] || [ -n "${ADVERTISE_PORT_BASE:-}" ]
+}
+
+adv_ip_display(){
+    local ip port_from port_to
+    ip="$(advertise_ip)"
+    if [ -n "${ADVERTISE_PORT_BASE:-}" ]; then
+        port_from="${MIN_TCP}-${MAX_TCP}"
+        port_to="$(advertise_port "$MIN_TCP")-$(advertise_port "$MAX_TCP")"
+        printf '%s  端口 %s → %s' "$ip" "$port_from" "$port_to"
+    else
+        printf '%s  （端口不变）' "$ip"
+    fi
+}
+
+advertise_menu(){
+    while :; do
+        clear
+        panel "入站 IP / 端口映射"
+        kv "本机出站 IP" "${SERVER_IP:-未知}"
+        if [ -n "${ADVERTISE_IP:-}" ]; then
+            if [ "$ADVERTISE_IP" = "${SERVER_IP:-}" ]; then
+                kv "客户端地址" "${ADVERTISE_IP}  ${DIM}（与出站 IP 相同）${RESET}"
+            else
+                kv "客户端地址" "${ADVERTISE_IP}" "$CYAN"
+            fi
+        else
+            kv "客户端地址" "${DIM}未设置 —— 默认用上面那个出站 IP${RESET}"
+        fi
+        if [ -n "${ADVERTISE_PORT_BASE:-}" ]; then
+            kv "端口映射" "${MIN_TCP}-${MAX_TCP} → $(advertise_port "$MIN_TCP")-$(advertise_port "$MAX_TCP")" "$CYAN"
+        else
+            kv "端口映射" "${DIM}未设置 —— 客户端用与本机相同的端口${RESET}"
+        fi
+        if [ -n "${ADVERTISE_IP:-}" ] || [ -n "${ADVERTISE_PORT_BASE:-}" ]; then
+            kv "导出效果" "$(adv_ip_display)" "$CYAN"
+        fi
+        hr
+        info "什么时候需要改这里？"
+        info "  · 面板上显示的出站 IP ≠ 客户端实际能连到的地址"
+        info "  · VPS 是 NAT / 共享 IP（Hax、LXC、容器等）"
+        info "  · 前面挂了中转，或端口被服务商映射过"
+        hr
+        echo "  1. 设置入站（客户端连接）IP"
+        echo "  2. 设置端口映射起始端口"
+        echo "  3. 清空全部设置（恢复用出站 IP / 本机端口）"
+        echo "  0. 返回"
+        read -r -p "请选择： " ac || ac=""
+        case "$ac" in
+          1)
+            echo
+            echo "  当前：${BOLD}${ADVERTISE_IP:-（未设置，用 ${SERVER_IP:-未知}）}${RESET}"
+            echo "  输入客户端要连接的 IP（IPv4 / IPv6 均可）"
+            echo "  ${DIM}清空请直接输入 - （连字符）${RESET}"
+            read -r -p "入站 IP： " _ai || _ai=""
+            if [ "$_ai" = "-" ]; then
+              ADVERTISE_IP=""; save_settings; export_all 2>/dev/null
+              ok "已清空入站 IP，恢复使用本机出站 IP"; pause; continue
+            fi
+            if [ -z "$_ai" ]; then
+              info "未输入，保持不变"; pause; continue
+            fi
+            if _is_ip_literal "$_ai"; then
+              ADVERTISE_IP="$_ai"; save_settings; export_all 2>/dev/null
+              ok "入站 IP 已设为：${ADVERTISE_IP}"
+              info "已重新生成全部链接与订阅 —— 客户端现在会连这个地址"
+            else
+              warn "不是合法的 IP 地址（请填 IPv4 或 IPv6 字面量，不要带端口 / 域名）"
+            fi
+            pause ;;
+          2)
+            echo
+            echo "  端口映射规则：${BOLD}客户端端口 = 起始端口 + （本机端口 - ${MIN_TCP}）${RESET}"
+            echo "  例如本机 TCP 段是 ${MIN_TCP}-${MAX_TCP}，填起始端口 30000，则："
+            printf '    本机 %s  →  客户端 %s\n' "$MIN_TCP" "$(( 30000 ))"
+            printf '    本机 %s  →  客户端 %s\n' "$(( MIN_TCP + 1 ))" "$(( 30001 ))"
+            echo
+            if [ -n "${ADVERTISE_PORT_BASE:-}" ]; then
+                echo "  当前起始端口：${BOLD}${ADVERTISE_PORT_BASE}${RESET}"
+            else
+                echo "  当前：${DIM}未设置（客户端端口 = 本机端口）${RESET}"
+            fi
+            echo "  ${DIM}清空请直接输入 - （连字符）${RESET}"
+            read -r -p "起始端口： " _ap || _ap=""
+            if [ "$_ap" = "-" ]; then
+              ADVERTISE_PORT_BASE=""; save_settings; export_all 2>/dev/null
+              ok "已清空端口映射，恢复使用本机端口"; pause; continue
+            fi
+            if [ -z "$_ap" ]; then
+              info "未输入，保持不变"; pause; continue
+            fi
+            if valid_port "$_ap" 2>/dev/null; then
+              ADVERTISE_PORT_BASE="$_ap"; save_settings; export_all 2>/dev/null
+              ok "端口映射起点已设为：${ADVERTISE_PORT_BASE}"
+              info "本机 ${MIN_TCP}-${MAX_TCP} → 客户端 $(advertise_port "$MIN_TCP")-$(advertise_port "$MAX_TCP")"
+            else
+              warn "端口无效（应为 1-65535 的数字）"
+            fi
+            pause ;;
+          3)
+            echo
+            read -r -p "确认清空入站 IP 与端口映射？[y/N] " _cy || _cy=""
+            case "$_cy" in
+              y|Y)
+                ADVERTISE_IP=""; ADVERTISE_PORT_BASE=""
+                save_settings; export_all 2>/dev/null
+                ok "已清空 —— 导出的链接恢复使用本机出站 IP 与本机端口" ;;
+              *) info "已取消" ;;
+            esac
+            pause ;;
+          0) return ;;
+          *) warn "无效选项"; sleep 1 ;;
+        esac
+    done
+}
+
+_is_ip_literal(){
+    local v="$1" o n
+    [ -n "$v" ] || return 1
+    case "$v" in
+        *:*)
+            case "$v" in *.*:*) return 1 ;; esac
+            case "$v" in *[!0-9a-fA-F:.]*) return 1 ;; esac
+            n="${v//[^:]/}"
+            [ "${#n}" -ge 2 ] || return 1
+            _v6_check "$v" && return 0 || return 1 ;;
+    esac
+    case "$v" in *[!0-9.]*) return 1 ;; esac
+    local IFS=. a b c d
+    set -- $v
+    [ $# -eq 4 ] || return 1
+    a="$1"; b="$2"; c="$3"; d="$4"
+    for o in "$a" "$b" "$c" "$d"; do
+        [ -n "$o" ] || return 1
+        case "$o" in 0) : ;; 0*) return 1 ;; esac
+        [ "$o" -le 255 ] 2>/dev/null || return 1
+    done
+    return 0
+}
+
+_v6_check(){
+    awk -v s="$1" 'BEGIN{
+        if (s !~ /:/) exit 1
+        t = s; c2 = gsub(/::/, "Z", t)
+        if (c2 > 1) exit 1
+        if (s ~ /^:|:$/ && s !~ /::/) exit 1
+        if (c2 == 1) {
+            ip = index(s, "::")
+            left = substr(s, 1, ip - 1)
+            right = substr(s, ip + 2)
+            split_flag = 1
+        } else {
+            left = s; right = ""; split_flag = 0
+        }
+        nL = (left == "") ? 0 : split(left, L, ":")
+        nR = (right == "") ? 0 : split(right, R, ":")
+        total = 0
+        for (i = 1; i <= nL; i++) {
+            g = L[i]
+            if (g == "") exit 1
+            if (g ~ /^[0-9a-fA-F]{1,4}$/) { total++; continue }
+            if (i == nL && nR == 0 && split_flag) {
+                if (g ~ /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/) continue
+            }
+            exit 1
+        }
+        for (i = 1; i <= nR; i++) {
+            g = R[i]
+            if (g == "") exit 1
+            if (g ~ /^[0-9a-fA-F]{1,4}$/) { total++; continue }
+            if (i == nR && g ~ /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/) continue
+            exit 1
+        }
+        if (split_flag) { if (total > 7) exit 1 }
+        else            { if (total != 8) exit 1 }
+        exit 0
+    }'
+}
+
 detect_network(){
     get_ip
     local _nc="$BASE/.net.cache" _nnow _nts="" _nudp="" _nnat="" _nl4="" _ncached=0
@@ -580,6 +776,10 @@ load_settings(){
     SUBHTTP_LISTEN="${SUBHTTP_LISTEN:-8088}"
     SUBHTTP_ALLOW_IPS="${SUBHTTP_ALLOW_IPS:-}"
     SUBHTTP_BACKEND="${SUBHTTP_BACKEND:-}"
+    ADVERTISE_IP="${ADVERTISE_IP:-}"
+    ADVERTISE_PORT_BASE="${ADVERTISE_PORT_BASE:-}"
+    [ -n "$ADVERTISE_IP" ] && { _is_ip_literal "$ADVERTISE_IP" || ADVERTISE_IP=""; }
+    [ -n "$ADVERTISE_PORT_BASE" ] && { valid_port "$ADVERTISE_PORT_BASE" 2>/dev/null || ADVERTISE_PORT_BASE=""; }
 }
 save_settings(){
     cat > "$SETTINGS" <<EOF
@@ -600,6 +800,8 @@ SUBHTTP_ENABLED=$SUBHTTP_ENABLED
 SUBHTTP_LISTEN=$SUBHTTP_LISTEN
 SUBHTTP_ALLOW_IPS=$SUBHTTP_ALLOW_IPS
 SUBHTTP_BACKEND=$SUBHTTP_BACKEND
+ADVERTISE_IP=$ADVERTISE_IP
+ADVERTISE_PORT_BASE=$ADVERTISE_PORT_BASE
 EOF
 }
 valid_port(){ [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
@@ -1983,6 +2185,9 @@ link_for_node(){
     uuidv="$(jq -r '.uuid // empty' <<<"$row")"; pw="$(jq -r '.password // empty' <<<"$row")"
     sni="$(jq -r '.sni // empty' <<<"$row")";    extra="$(jq -r '.extra // empty' <<<"$row")"
     pub="$(jq -r '.public_key // empty' <<<"$row")"; sid="$(jq -r '.short_id // empty' <<<"$row")"
+    local _adv_ip _adv_port
+    _adv_ip="$(advertise_ip)"
+    _adv_port="$(advertise_port "$port")"
     local flow_q=""
     local pcs_q="" _ai=0
     local _pcs=""
@@ -2008,45 +2213,45 @@ link_for_node(){
     case "$type" in
       vless-reality)
         [ -n "$extra" ] && flow_q="&flow=$(urlencode "$extra")"
-        printf '%s\n' "vless://${uuidv}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=$(urlencode "$sni")&fp=${FINGERPRINT:-chrome}${flow_q}&pbk=${pub}&sid=${sid}&type=tcp&headerType=none${uot_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "vless://${uuidv}@${_adv_ip}:${_adv_port}?encryption=none&security=reality&sni=$(urlencode "$sni")&fp=${FINGERPRINT:-chrome}${flow_q}&pbk=${pub}&sid=${sid}&type=tcp&headerType=none${uot_q}#$(urlencode "$name")" ;;
       vless-ws-tls)
-        printf '%s\n' "vless://${uuidv}@${SERVER_IP}:${port}?encryption=none&security=tls&type=ws&host=$(urlencode "$sni")&sni=$(urlencode "$sni")&path=$(urlencode "$extra")${pcs_q}${uot_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "vless://${uuidv}@${_adv_ip}:${_adv_port}?encryption=none&security=tls&type=ws&host=$(urlencode "$sni")&sni=$(urlencode "$sni")&path=$(urlencode "$extra")${pcs_q}${uot_q}#$(urlencode "$name")" ;;
       vmess-ws-tls)
         if [ "$UOT_ENABLED" = "1" ]; then
-            jq -n --arg v "2" --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" --arg id "$uuidv" --arg host "$sni" --arg path "$extra" --arg pcs "$_pcs" --argjson ai "$_ai" '{v:$v,ps:$ps,add:$add,port:$port,id:$id,aid:0,scy:"auto",net:"ws",type:"none",host:$host,path:$path,tls:"tls",sni:$host,alpn:"",fp:""} + (if $ai == 1 then {"allowInsecure":true} else {pcs:$pcs} end) + {"udp-over-tcp":true,"udp-over-tcp-version":2}' | b64 | sed 's/^/vmess:\/\//'
+            jq -n --arg v "2" --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" --arg id "$uuidv" --arg host "$sni" --arg path "$extra" --arg pcs "$_pcs" --argjson ai "$_ai" '{v:$v,ps:$ps,add:$add,port:$port,id:$id,aid:0,scy:"auto",net:"ws",type:"none",host:$host,path:$path,tls:"tls",sni:$host,alpn:"",fp:""} + (if $ai == 1 then {"allowInsecure":true} else {pcs:$pcs} end) + {"udp-over-tcp":true,"udp-over-tcp-version":2}' | b64 | sed 's/^/vmess:\/\//'
         else
-            jq -n --arg v "2" --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" --arg id "$uuidv" --arg host "$sni" --arg path "$extra" --arg pcs "$_pcs" --argjson ai "$_ai" '{v:$v,ps:$ps,add:$add,port:$port,id:$id,aid:0,scy:"auto",net:"ws",type:"none",host:$host,path:$path,tls:"tls",sni:$host,alpn:"",fp:""} + (if $ai == 1 then {"allowInsecure":true} else {pcs:$pcs} end)' | b64 | sed 's/^/vmess:\/\//'
+            jq -n --arg v "2" --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" --arg id "$uuidv" --arg host "$sni" --arg path "$extra" --arg pcs "$_pcs" --argjson ai "$_ai" '{v:$v,ps:$ps,add:$add,port:$port,id:$id,aid:0,scy:"auto",net:"ws",type:"none",host:$host,path:$path,tls:"tls",sni:$host,alpn:"",fp:""} + (if $ai == 1 then {"allowInsecure":true} else {pcs:$pcs} end)' | b64 | sed 's/^/vmess:\/\//'
         fi ;;
       trojan)
-        printf '%s\n' "trojan://${pw}@${SERVER_IP}:${port}?security=tls&sni=$(urlencode "$sni")&type=tcp&headerType=none${pcs_q}${uot_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "trojan://${pw}@${_adv_ip}:${_adv_port}?security=tls&sni=$(urlencode "$sni")&type=tcp&headerType=none${pcs_q}${uot_q}#$(urlencode "$name")" ;;
       shadowsocks)
         local ss_q=""
         [ "$UOT_ENABLED" = "1" ] && ss_q="?udp-over-tcp=true&udp-over-tcp-version=2"
-        printf '%s\n' "ss://$(printf '%s:%s' "$extra" "$pw" | b64)@${SERVER_IP}:${port}${ss_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "ss://$(printf '%s:%s' "$extra" "$pw" | b64)@${_adv_ip}:${_adv_port}${ss_q}#$(urlencode "$name")" ;;
       hysteria2)
-        printf '%s\n' "hysteria2://${pw}@${SERVER_IP}:${port}?security=tls&sni=$(urlencode "$sni")&alpn=h3&insecure=1#$(urlencode "$name")" ;;
+        printf '%s\n' "hysteria2://${pw}@${_adv_ip}:${_adv_port}?security=tls&sni=$(urlencode "$sni")&alpn=h3&insecure=1#$(urlencode "$name")" ;;
       hy2-obfs)
-        printf '%s\n' "hysteria2://${pw}@${SERVER_IP}:${port}?security=tls&sni=$(urlencode "$sni")&alpn=h3&obfs=salamander&obfs-password=$(urlencode "$extra")&insecure=1#$(urlencode "$name")" ;;
+        printf '%s\n' "hysteria2://${pw}@${_adv_ip}:${_adv_port}?security=tls&sni=$(urlencode "$sni")&alpn=h3&obfs=salamander&obfs-password=$(urlencode "$extra")&insecure=1#$(urlencode "$name")" ;;
       hy2-realm)
-        printf '%s\n' "hysteria2://${pw}@${SERVER_IP}:${port}?security=tls&sni=$(urlencode "$sni")&alpn=h3&insecure=1#$(urlencode "$name")" ;;
+        printf '%s\n' "hysteria2://${pw}@${_adv_ip}:${_adv_port}?security=tls&sni=$(urlencode "$sni")&alpn=h3&insecure=1#$(urlencode "$name")" ;;
       tuic)
-        printf '%s\n' "tuic://${uuidv}:${pw}@${SERVER_IP}:${port}?congestion_control=bbr&alpn=h3&sni=$(urlencode "$sni")&udp_relay_mode=native&allow_insecure=1#$(urlencode "$name")" ;;
+        printf '%s\n' "tuic://${uuidv}:${pw}@${_adv_ip}:${_adv_port}?congestion_control=bbr&alpn=h3&sni=$(urlencode "$sni")&udp_relay_mode=native&allow_insecure=1#$(urlencode "$name")" ;;
       anytls)
-        printf '%s\n' "anytls://${pw}@${SERVER_IP}:${port}?security=tls&sni=$(urlencode "$sni")&insecure=1${uot_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "anytls://${pw}@${_adv_ip}:${_adv_port}?security=tls&sni=$(urlencode "$sni")&insecure=1${uot_q}#$(urlencode "$name")" ;;
       naive)
-        printf '%s\n' "naive+https://$(urlencode "$uuidv"):$(urlencode "$pw")@${SERVER_IP}:${port}?sni=$(urlencode "$sni")&insecure=1${uot_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "naive+https://$(urlencode "$uuidv"):$(urlencode "$pw")@${_adv_ip}:${_adv_port}?sni=$(urlencode "$sni")&insecure=1${uot_q}#$(urlencode "$name")" ;;
       h2-reality)
-        printf '%s\n' "vless://${uuidv}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=$(urlencode "$sni")&alpn=h2&fp=${FINGERPRINT:-chrome}&pbk=${pub}&sid=${sid}&type=http&host=$(urlencode "$sni")&path=%2F${uot_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "vless://${uuidv}@${_adv_ip}:${_adv_port}?encryption=none&security=reality&sni=$(urlencode "$sni")&alpn=h2&fp=${FINGERPRINT:-chrome}&pbk=${pub}&sid=${sid}&type=http&host=$(urlencode "$sni")&path=%2F${uot_q}#$(urlencode "$name")" ;;
       grpc-reality)
-        printf '%s\n' "vless://${uuidv}@${SERVER_IP}:${port}?encryption=none&security=reality&sni=$(urlencode "$sni")&fp=${FINGERPRINT:-chrome}&pbk=${pub}&sid=${sid}&type=grpc&serviceName=$(urlencode "$extra")&mode=gun${uot_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "vless://${uuidv}@${_adv_ip}:${_adv_port}?encryption=none&security=reality&sni=$(urlencode "$sni")&fp=${FINGERPRINT:-chrome}&pbk=${pub}&sid=${sid}&type=grpc&serviceName=$(urlencode "$extra")&mode=gun${uot_q}#$(urlencode "$name")" ;;
       shadowtls)
         local stl_plugin
         stl_plugin="$(jq -nc --arg host "$sni" --arg pw "$pw" '{version:"3",host:$host,password:$pw}' | b64url)"
-        printf '%s\n' "ss://$(printf '%s:%s' "2022-blake3-aes-128-gcm" "$pw" | b64)@${SERVER_IP}:${port}?shadow-tls=${stl_plugin}#$(urlencode "$name")" ;;
+        printf '%s\n' "ss://$(printf '%s:%s' "2022-blake3-aes-128-gcm" "$pw" | b64)@${_adv_ip}:${_adv_port}?shadow-tls=${stl_plugin}#$(urlencode "$name")" ;;
       http2)
-        printf '%s\n' "http://${uuidv}:${pw}@${SERVER_IP}:${port}/?protocol=https&sni=$(urlencode "$sni")&insecure=1${uot_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "http://${uuidv}:${pw}@${_adv_ip}:${_adv_port}/?protocol=https&sni=$(urlencode "$sni")&insecure=1${uot_q}#$(urlencode "$name")" ;;
       http3)
-        printf '%s\n' "http://${uuidv}:${pw}@${SERVER_IP}:${port}/?protocol=h3&sni=$(urlencode "$sni")&insecure=1#$(urlencode "$name")" ;;
+        printf '%s\n' "http://${uuidv}:${pw}@${_adv_ip}:${_adv_port}/?protocol=h3&sni=$(urlencode "$sni")&insecure=1#$(urlencode "$name")" ;;
       *)
         return 1 ;;
     esac
@@ -2056,6 +2261,9 @@ show_links(){
     get_ip
     panel "节点链接"
     kv "服务器" "$SERVER_IP"
+    if advertise_active; then
+        kv "客户端地址" "$(adv_ip_display)" "$CYAN"
+    fi
     [ "$UOT_ENABLED" = "1" ] && kv "UoT" "${GREEN}已开启（链接已附带 udp-over-tcp 参数）${RESET}"
     local total n=0 row link
     total="$(jq 'length' "$NODES" 2>/dev/null || echo 0)"
@@ -2157,6 +2365,45 @@ show_qr_all(){
     done
 }
 
+show_qr_for_sub(){
+    local which="${1:-node}"
+    local url=""
+    case "$which" in
+        std) url="$(sub_url_std 2>/dev/null)" ;;
+        *)   url="$(sub_url 2>/dev/null)" ;;
+    esac
+    if [ -z "$url" ]; then
+        warn "无法生成订阅地址（订阅服务可能未初始化）"
+        return 1
+    fi
+    echo
+    echo "${BOLD}订阅地址${RESET}"
+    echo "${CYAN}${url}${RESET}"
+    echo
+    qr_terminal "$url"
+}
+
+sub_qr_menu(){
+    while :; do
+        echo
+        echo "${BOLD}订阅链接二维码${RESET}"
+        if [ "$(sub_status 2>/dev/null)" != "on" ]; then
+            warn "订阅服务当前未开启 —— 手机可能扫得到地址但连不上，请先在「订阅服务」里启动"
+        fi
+        echo
+        echo "  1. 默认订阅地址（按客户端 UA 自动适配）"
+        echo "  2. 通用订阅地址（纯标准链接，v2rayA 等用）"
+        echo "  0. 返回"
+        read -r -p "请选择： " s || s=""
+        case "$s" in
+          1) show_qr_for_sub node; pause ;;
+          2) show_qr_for_sub std; pause ;;
+          0) return ;;
+          *) warn "无效"; sleep 1 ;;
+        esac
+    done
+}
+
 export_clash(){
     mkdir -p "$SUBDIR"
     get_ip
@@ -2174,6 +2421,8 @@ export_clash(){
         uuidv="$(jq -r '.uuid // empty' <<<"$row")"; pw="$(jq -r '.password // empty' <<<"$row")"
         sni="$(jq -r '.sni // empty' <<<"$row")";    extra="$(jq -r '.extra // empty' <<<"$row")"
         pub="$(jq -r '.public_key // empty' <<<"$row")"; sid="$(jq -r '.short_id // empty' <<<"$row")"
+        local _adv_ip _adv_port
+        _adv_ip="$(advertise_ip)"; _adv_port="$(advertise_port "$port")"
         local safe_name; safe_name="$(printf '%s' "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')"
         local uot=""
         if [ "$UOT_ENABLED" = "1" ]; then
@@ -2184,18 +2433,18 @@ export_clash(){
         fi
         local entry=""
         case "$type" in
-          vless-reality) entry="{name: \"${safe_name}\", type: vless, server: \"${SERVER_IP}\", port: ${port}, uuid: ${uuidv}, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
-          h2-reality)    entry="{name: \"${safe_name}\", type: vless, server: \"${SERVER_IP}\", port: ${port}, uuid: ${uuidv}, network: http, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
-          grpc-reality)  entry="{name: \"${safe_name}\", type: vless, server: \"${SERVER_IP}\", port: ${port}, uuid: ${uuidv}, network: grpc, grpc-opts: {grpc-service-name: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
-          vless-ws-tls)  entry="{name: \"${safe_name}\", type: vless, server: \"${SERVER_IP}\", port: ${port}, uuid: ${uuidv}, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, ${tls_verify}${uot}}" ;;
-          vmess-ws-tls)  entry="{name: \"${safe_name}\", type: vmess, server: \"${SERVER_IP}\", port: ${port}, uuid: ${uuidv}, alterId: 0, cipher: auto, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, ${tls_verify}${uot}}" ;;
-          trojan)        entry="{name: \"${safe_name}\", type: trojan, server: \"${SERVER_IP}\", port: ${port}, password: \"${pw}\", udp: true, sni: ${sni}, client-fingerprint: ${fp}, ${tls_verify}${uot}}" ;;
-          anytls)        entry="{name: \"${safe_name}\", type: anytls, server: \"${SERVER_IP}\", port: ${port}, password: \"${pw}\", udp: true, sni: ${sni}, ${tls_verify}${uot}}" ;;
-          shadowsocks)   entry="{name: \"${safe_name}\", type: ss, server: \"${SERVER_IP}\", port: ${port}, cipher: ${extra}, password: \"${pw}\", udp: true${uot}}" ;;
-          hysteria2|hy2-obfs|hy2-realm) entry="{name: \"${safe_name}\", type: hysteria2, server: \"${SERVER_IP}\", port: ${port}, password: \"${pw}\", sni: ${sni}, ${tls_verify}}" ;;
-          tuic)          entry="{name: \"${safe_name}\", type: tuic, server: \"${SERVER_IP}\", port: ${port}, uuid: ${uuidv}, password: \"${pw}\", alpn: [h3], sni: ${sni}, ${tls_verify}}" ;;
-          shadowtls)     entry="{name: \"${safe_name}\", type: ss, server: \"${SERVER_IP}\", port: ${port}, cipher: 2022-blake3-aes-128-gcm, password: \"${pw}\", plugin: shadow-tls, client-fingerprint: ${fp}, plugin-opts: {host: ${sni}, password: \"${pw}\", version: 3}, ${tls_verify}}" ;;
-          naive)         entry="{name: \"${safe_name}\", type: http, server: \"${SERVER_IP}\", port: ${port}, username: ${uuidv}, password: \"${pw}\", tls: true, sni: ${sni}, ${tls_verify}}" ;;
+          vless-reality) entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
+          h2-reality)    entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: http, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
+          grpc-reality)  entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: grpc, grpc-opts: {grpc-service-name: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
+          vless-ws-tls)  entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, ${tls_verify}${uot}}" ;;
+          vmess-ws-tls)  entry="{name: \"${safe_name}\", type: vmess, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, alterId: 0, cipher: auto, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, ${tls_verify}${uot}}" ;;
+          trojan)        entry="{name: \"${safe_name}\", type: trojan, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${pw}\", udp: true, sni: ${sni}, client-fingerprint: ${fp}, ${tls_verify}${uot}}" ;;
+          anytls)        entry="{name: \"${safe_name}\", type: anytls, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${pw}\", udp: true, sni: ${sni}, ${tls_verify}${uot}}" ;;
+          shadowsocks)   entry="{name: \"${safe_name}\", type: ss, server: \"${_adv_ip}\", port: ${_adv_port}, cipher: ${extra}, password: \"${pw}\", udp: true${uot}}" ;;
+          hysteria2|hy2-obfs|hy2-realm) entry="{name: \"${safe_name}\", type: hysteria2, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${pw}\", sni: ${sni}, ${tls_verify}}" ;;
+          tuic)          entry="{name: \"${safe_name}\", type: tuic, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, password: \"${pw}\", alpn: [h3], sni: ${sni}, ${tls_verify}}" ;;
+          shadowtls)     entry="{name: \"${safe_name}\", type: ss, server: \"${_adv_ip}\", port: ${_adv_port}, cipher: 2022-blake3-aes-128-gcm, password: \"${pw}\", plugin: shadow-tls, client-fingerprint: ${fp}, plugin-opts: {host: ${sni}, password: \"${pw}\", version: 3}, ${tls_verify}}" ;;
+          naive)         entry="{name: \"${safe_name}\", type: http, server: \"${_adv_ip}\", port: ${_adv_port}, username: ${uuidv}, password: \"${pw}\", tls: true, sni: ${sni}, ${tls_verify}}" ;;
           *)             continue ;;
         esac
         [ -n "$entry" ] || continue
@@ -2283,50 +2532,50 @@ link_v2rayn_for_node(){
     local _b64=""
     case "$type" in
       hysteria2)
-        _b64="$(jq -nc --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" \
+        _b64="$(jq -nc --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" \
             --arg pw "$pw" --arg sni "$sni" --argjson ver 4 \
             '{ConfigType:7,CoreType:24,ConfigVersion:$ver,Remarks:$ps,Address:$add,Port:$port,
               Password:$pw,StreamSecurity:"tls",AllowInsecure:"true",Sni:$sni}' | b64url)" ;;
       hy2-obfs)
-        _b64="$(jq -nc --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" \
+        _b64="$(jq -nc --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" \
             --arg pw "$pw" --arg sni "$sni" --arg obfs "$extra" --argjson ver 4 \
             '{ConfigType:7,CoreType:24,ConfigVersion:$ver,Remarks:$ps,Address:$add,Port:$port,
               Password:$pw,StreamSecurity:"tls",AllowInsecure:"true",Sni:$sni,
               ProtoExtraObj:{Obfs:"salamander",ObfsPassword:$obfs}}' | b64url)" ;;
       hy2-realm)
-        _b64="$(jq -nc --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" \
+        _b64="$(jq -nc --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" \
             --arg pw "$pw" --arg sni "$sni" --argjson ver 4 \
             '{ConfigType:7,CoreType:24,ConfigVersion:$ver,Remarks:$ps,Address:$add,Port:$port,
               Password:$pw,StreamSecurity:"tls",AllowInsecure:"true",Sni:$sni}' | b64url)" ;;
       tuic)
-        _b64="$(jq -nc --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" \
+        _b64="$(jq -nc --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" \
             --arg pw "$pw" --arg u "$uuidv" --arg sni "$sni" --argjson ver 4 \
             '{ConfigType:8,CoreType:24,ConfigVersion:$ver,Remarks:$ps,Address:$add,Port:$port,
               Password:$pw,Username:$u,StreamSecurity:"tls",AllowInsecure:"true",Sni:$sni,
               Alpn:"h3",ProtoExtraObj:{CongestionControl:"bbr"}}' | b64url)" ;;
       anytls)
-        _b64="$(jq -nc --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" \
+        _b64="$(jq -nc --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" \
             --arg pw "$pw" --arg sni "$sni" --arg fp "${FINGERPRINT:-chrome}" --argjson ver 4 \
             '{ConfigType:11,CoreType:24,ConfigVersion:$ver,Remarks:$ps,Address:$add,Port:$port,
               Password:$pw,StreamSecurity:"tls",AllowInsecure:"true",Sni:$sni,Fingerprint:$fp}' | b64url)" ;;
       naive)
-        _b64="$(jq -nc --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" \
+        _b64="$(jq -nc --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" \
             --arg pw "$pw" --arg u "$uuidv" --arg sni "$sni" --argjson ver 4 \
             '{ConfigType:12,CoreType:24,ConfigVersion:$ver,Remarks:$ps,Address:$add,Port:$port,
               Password:$pw,Username:$u,StreamSecurity:"tls",AllowInsecure:"true",Sni:$sni}' | b64url)" ;;
       shadowtls)
-        _b64="$(jq -nc --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" \
+        _b64="$(jq -nc --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" \
             --arg pw "$pw" --arg sni "$sni" --argjson ver 4 \
             '{ConfigType:3,CoreType:24,ConfigVersion:$ver,Remarks:$ps,Address:$add,Port:$port,
               Password:$pw,Method:"2022-blake3-aes-128-gcm",StreamSecurity:"tls",
               AllowInsecure:"true",Sni:$sni,ProtoExtraObj:{ShadowTlsVersion:3,ShadowTlsHost:$sni,ShadowTlsPassword:$pw}}' | b64url)" ;;
       http2)
-        _b64="$(jq -nc --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" \
+        _b64="$(jq -nc --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" \
             --arg pw "$pw" --arg u "$uuidv" --arg sni "$sni" --argjson ver 4 \
             '{ConfigType:10,CoreType:24,ConfigVersion:$ver,Remarks:$ps,Address:$add,Port:$port,
               Password:$pw,Username:$u,StreamSecurity:"tls",AllowInsecure:"true",Sni:$sni}' | b64url)" ;;
       http3)
-        _b64="$(jq -nc --arg ps "$name" --arg add "$SERVER_IP" --argjson port "$port" \
+        _b64="$(jq -nc --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" \
             --arg pw "$pw" --arg u "$uuidv" --arg sni "$sni" --argjson ver 4 \
             '{ConfigType:10,CoreType:24,ConfigVersion:$ver,Remarks:$ps,Address:$add,Port:$port,
               Password:$pw,Username:$u,StreamSecurity:"tls",AllowInsecure:"true",Sni:$sni,
@@ -2428,7 +2677,11 @@ show_nodes(){
         hr
         printf '  %s%s[%2d]%s  %s%s%s   %s%s%s\n' \
             "$BOLD" "$MAGENTA" "$i" "$RESET" "$BOLD" "$name" "$RESET" "$DIM" "$type" "$RESET"
-        kvf 4 "地址" "${SERVER_IP}  ${pt} / ${port}${RESET}"
+        if advertise_active; then
+            kvf 4 "地址" "$(advertise_ip)  ${pt} / $(advertise_port "$port")   ${DIM}(本机 ${port})${RESET}"
+        else
+            kvf 4 "地址" "${SERVER_IP}  ${pt} / ${port}${RESET}"
+        fi
         local uid_label="密码"
         case "$type" in
             vless-reality|vless-ws-tls|vmess-ws-tls|tuic|h2-reality|grpc-reality) uid_label="UUID" ;;
@@ -2506,32 +2759,34 @@ export_singbox_json(){
         uuidv="$(jq -r '.uuid // empty' <<<"$row")"; pw="$(jq -r '.password // empty' <<<"$row")"
         sni="$(jq -r '.sni // empty' <<<"$row")";   extra="$(jq -r '.extra // empty' <<<"$row")"
         pub="$(jq -r '.public_key // empty' <<<"$row")"; sid="$(jq -r '.short_id // empty' <<<"$row")"
+        local _adv_ip _adv_port
+        _adv_ip="$(advertise_ip)"; _adv_port="$(advertise_port "$port")"
         ob=""
         case "$type" in
           vless-reality)
-            ob="$(jq -nc --arg t "$name" --arg s "$SERVER_IP" --argjson p "$port" --arg u "$uuidv" --arg sn "$sni" --arg f "${FINGERPRINT:-chrome}" --arg pb "$pub" --arg sd "$sid" --arg fl "$extra" \
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg sn "$sni" --arg f "${FINGERPRINT:-chrome}" --arg pb "$pub" --arg sd "$sid" --arg fl "$extra" \
               '{type:"vless",tag:$t,server:$s,server_port:$p,uuid:$u,flow:($fl|if .=="" then null else . end),
                 tls:{enabled:true,server_name:$sn,utls:{enabled:true,fingerprint:$f},
                      reality:{enabled:true,public_key:$pb,short_id:$sd}}}' 2>/dev/null)" ;;
           vless-ws-tls)
-            ob="$(jq -nc --arg t "$name" --arg s "$SERVER_IP" --argjson p "$port" --arg u "$uuidv" --arg sn "$sni" --arg pa "$extra" \
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg sn "$sni" --arg pa "$extra" \
               '{type:"vless",tag:$t,server:$s,server_port:$p,uuid:$u,
                 tls:{enabled:true,server_name:$sn,insecure:true},
                 transport:{type:"ws",path:$pa,headers:{Host:$sn}}}' 2>/dev/null)" ;;
           trojan)
-            ob="$(jq -nc --arg t "$name" --arg s "$SERVER_IP" --argjson p "$port" --arg pw "$pw" --arg sn "$sni" \
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" \
               '{type:"trojan",tag:$t,server:$s,server_port:$p,password:$pw,
                 tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)" ;;
           hysteria2|hy2-obfs|hy2-realm)
-            ob="$(jq -nc --arg t "$name" --arg s "$SERVER_IP" --argjson p "$port" --arg pw "$pw" --arg sn "$sni" \
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" \
               '{type:"hysteria2",tag:$t,server:$s,server_port:$p,password:$pw,
                 tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)" ;;
           tuic)
-            ob="$(jq -nc --arg t "$name" --arg s "$SERVER_IP" --argjson p "$port" --arg u "$uuidv" --arg pw "$pw" --arg sn "$sni" \
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg pw "$pw" --arg sn "$sni" \
               '{type:"tuic",tag:$t,server:$s,server_port:$p,uuid:$u,password:$pw,
                 tls:{enabled:true,server_name:$sn,insecure:true,alpn:["h3"]}}' 2>/dev/null)" ;;
           anytls)
-            ob="$(jq -nc --arg t "$name" --arg s "$SERVER_IP" --argjson p "$port" --arg pw "$pw" --arg sn "$sni" \
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" \
               '{type:"anytls",tag:$t,server:$s,server_port:$p,password:$pw,
                 tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)" ;;
           *) ob="" ;;
@@ -3344,13 +3599,13 @@ sub_resource(){
 sub_url(){
     local tok port
     tok="$(sub_token)"; port="${SUBHTTP_LISTEN:-8088}"
-    printf 'http://%s:%s/sub/%s' "$SERVER_IP" "$port" "$tok"
+    printf 'http://%s:%s/sub/%s' "$(advertise_ip)" "$port" "$tok"
 }
 
 sub_url_std(){
     local tok port
     tok="$(sub_token)"; port="${SUBHTTP_LISTEN:-8088}"
-    printf 'http://%s:%s/sub/%s/std' "$SERVER_IP" "$port" "$tok"
+    printf 'http://%s:%s/sub/%s/std' "$(advertise_ip)" "$port" "$tok"
 }
 sub_show_log(){
     local elog="/var/log/nginx/error.log" logtext=""
@@ -3459,7 +3714,7 @@ subhttp_menu(){
         hr
         if nginx_conf_legacy_present; then
             warn "存在旧版遗留配置：${NGINX_CONF_LEGACY}"
-            info "它会让 nginx 校验失败（连带你的其它站点）→ 选 7 可一键清理"
+            info "它会让 nginx 校验失败（连带你的其它站点）→ 选 8 可一键清理"
             hr
         fi
         if [ "${SUBHTTP_BACKEND:-}" = nginx ] && [ -n "${NGINX_CONF:-}" ] && [ ! -f "$NGINX_CONF" ]; then
@@ -3483,12 +3738,13 @@ subhttp_menu(){
         echo "1. 启动 / 刷新订阅服务"
         echo "2. 停止订阅服务"
         echo "3. 复制订阅 URL"
-        echo "4. 修改监听端口"
-        echo "5. 设置 IP 白名单"
-        echo "6. 轮换访问令牌（旧 URL 立即失效）"
-        echo "7. 查看服务日志"
-        echo "8. 切换实现方式（nginx / Python）"
-        echo "9. 卸载订阅后端（移除 nginx 包 / Python 残留）"
+        echo "4. 订阅链接二维码（手机扫码导入）"
+        echo "5. 修改监听端口"
+        echo "6. 设置 IP 白名单"
+        echo "7. 轮换访问令牌（旧 URL 立即失效）"
+        echo "8. 查看服务日志"
+        echo "9. 切换实现方式（nginx / Python）"
+        echo "10. 卸载订阅后端（移除 nginx 包 / Python 残留）"
         echo "0. 返回"
         read -r -p "请选择： " x || x=""
         case "$x" in
@@ -3498,6 +3754,9 @@ subhttp_menu(){
             if [ "$(sub_status)" != on ]; then warn "服务未启动，先把 1 里启动它"; pause; continue; fi
             copy_text "$(sub_url)"; pause ;;
           4)
+            if [ "$(sub_status)" != on ]; then warn "服务未启动，先把 1 里启动它"; pause; continue; fi
+            sub_qr_menu ;;
+          5)
             echo; read -r -p "  新端口（1024-65535）： " np || np=""
             case "$np" in ''|*[!0-9]*) warn "无效端口"; pause; continue ;; esac
             [ "$np" -ge 1024 ] && [ "$np" -le 65535 ] || { warn "端口范围 1024-65535"; pause; continue; }
@@ -3505,20 +3764,20 @@ subhttp_menu(){
             SUBHTTP_LISTEN="$np"; save_settings
             sub_restart >/dev/null 2>&1 || true
             ok "端口已改为 $np"; pause ;;
-          5)
+          6)
             echo; echo "  ${DIM}空格分隔，如 1.2.3.4 5.6.7.0/24；留空 = 不限制${RESET}"
             read -r -p "  IP 白名单： " ips || ips=""
             SUBHTTP_ALLOW_IPS="$(printf '%s' "$ips" | tr -s ' ')"
             save_settings
             sub_restart >/dev/null 2>&1 || true
             ok "已更新白名单"; pause ;;
-          6)
+          7)
             sub_rotate_token
             ok "令牌已轮换，请重新复制订阅 URL"; pause ;;
-          7)
+          8)
             sub_show_log
             pause ;;
-          8)
+          9)
             local _was="$st"
             sub_choose_backend || true
             if [ "$_was" = on ] && [ -n "${SUBHTTP_BACKEND:-}" ]; then
@@ -3527,7 +3786,7 @@ subhttp_menu(){
                 sub_start >/dev/null 2>&1 || true
             fi
             pause ;;
-          9)
+          10)
             sub_uninstall_backend; pause ;;
           0) return ;;
           *) warn "无效选项"; sleep 1 ;;
@@ -3997,12 +4256,21 @@ client_menu(){
     else
         kv "节点命名" "${DIM}<协议类型>（未探测到国家）${RESET}"
     fi
+    if advertise_active; then
+        kv "客户端地址" "$(adv_ip_display)" "$CYAN"
+        if [ -n "${SERVER_IP:-}" ] && [ "$(advertise_ip)" != "$SERVER_IP" ]; then
+            kv "本机出站 IP" "${DIM}${SERVER_IP}（仅供本机访问外网用，不是节点地址）${RESET}"
+        fi
+    else
+        kv "客户端地址" "${DIM}与部署地址相同（未设置入站 IP / 端口映射）${RESET}"
+    fi
     hr
     echo "  1. 修改 uTLS 指纹（Reality / Clash 伪装）"
     echo "  2. 切换 UDP over TCP（UoT）"
     echo "  3. SNI 域名优选（实测 TLS 握手，自动选最快的）"
     echo "  4. 手动指定默认 SNI 域名"
     echo "  5. 节点命名（默认 国家/地区 + 协议类型，可自定义前缀）"
+    echo "  6. 入站 IP / 端口映射（入站出站 IP 不同、或端口被映射时用）"
     echo "  0. 返回"
     read -r -p "请选择： " c || c=""
     case "$c" in
@@ -4130,6 +4398,8 @@ client_menu(){
           *) warn "无效选项"; sleep 1; continue ;;
         esac
         pause ;;
+      6)
+        advertise_menu ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
@@ -4564,7 +4834,7 @@ sub_menu(){
         echo "  ${GREEN}●${RESET} 订阅服务已开启，客户端填这一个地址即可："
         echo "    ${CYAN}$(sub_url 2>/dev/null)${RESET}"
     else
-        echo "  ${DIM}○ 订阅服务未开启 —— 开启后可用「一个 URL 适配所有客户端」（见 7，或主菜单 10）${RESET}"
+        echo "  ${DIM}○ 订阅服务未开启 —— 开启后可用「一个 URL 适配所有客户端」（见 8，或主菜单 10）${RESET}"
     fi
     echo
     echo "1. 一键复制全部链接（OSC52）"
@@ -4573,7 +4843,8 @@ sub_menu(){
     echo "4. 查看 / 复制 v2rayN 订阅（自动指定 sing-box 内核）"
     echo "5. 查看 / 复制 小火箭 / 通用订阅（纯标准链接，v2rayA 等也用它）"
     echo "6. 查看 sing-box 配置"
-    echo "7. 订阅服务（后端 / 订阅 URL / 日志 —— 主菜单 10 也是它）"
+    echo "7. 订阅链接二维码（手机扫码导入）"
+    echo "8. 订阅服务（后端 / 订阅 URL / 日志 —— 主菜单 10 也是它）"
     echo "0. 返回"
     read -r -p "请选择： " x || x=""
     case "$x" in
@@ -4583,7 +4854,8 @@ sub_menu(){
       4) v2rayn_sub_menu ;;
       5) shadowrocket_sub_menu ;;
       6) cat "$CONF"; pause ;;
-      7) subhttp_menu ;;
+      7) sub_qr_menu ;;
+      8) subhttp_menu ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
@@ -4750,7 +5022,12 @@ menu(){
     fi
     kv "系统" "${OS} ${VER}"
     kv "服务器" "${COUNTRY_NAME:-未知}${COUNTRY_CODE:+ ($COUNTRY_CODE)}"
-    kv "部署地址" "${SERVER_IP}"
+    if advertise_active; then
+        kv "部署地址" "${SERVER_IP}  ${DIM}(本机)${RESET}"
+        kv "客户端地址" "$(adv_ip_display)" "$CYAN"
+    else
+        kv "部署地址" "${SERVER_IP}"
+    fi
     if [ "$UDP_OK" = "0" ]; then
         kv "端口段" "TCP ${MIN_TCP}-${MAX_TCP}   ${RED}UDP 不可用${RESET}"
     else
