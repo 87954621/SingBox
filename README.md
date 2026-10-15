@@ -10,18 +10,20 @@
 
 ## 快速开始
 
-```bash
+
 # 方式一：下载后运行（推荐）
+```bash
 bash sing-box.sh
-
+```
 # 方式二：一键安装（把 URL 换成你的实际地址）
+```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh)
-
+```
 # 方式三：没有 curl 的精简系统（Alpine / BusyBox 自带 wget）——先下载再运行
+```bash
 wget -qO sb.sh https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh && bash sb.sh
 ```
 
-> ⚠️ **别写成 `wget -qO- URL | bash`**：安装过程会在终端问你 y/N（如「是否安装 nginx」），管道里这些 `read` 会把后面的脚本内容当答案吞掉，表现为「提示一闪就跳过、装到一半莫名报错」。要么先下载再运行（方式三），要么用 `bash <(wget -qO- URL)`（限 bash；sh/ash 没有进程替换请用方式三）。
 
 装完后用 `sb` 进入菜单：
 
