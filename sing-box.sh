@@ -77,7 +77,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.1"
+VERSION="V3.9.2"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -534,13 +534,25 @@ advertise_menu(){
         fi
         hr
         info "什么时候需要改这里？"
-        info "  · 面板上显示的出站 IP ≠ 客户端实际能连到的地址"
-        info "  · VPS 是 NAT / 共享 IP（Hax、LXC、容器等）"
-        info "  · 前面挂了中转，或端口被服务商映射过"
+        info "  · 客户端导入订阅后所有节点都连不上，但面板显示服务正常"
+        info "  · VPS 是 NAT / 共享 IP（Hax、LXC、容器、免费机等）"
+        info "  · 前面挂了中转跳板，或端口被服务商映射过（本机 20000 ≠ 对外的 30000）"
+        echo
+        info "不改也能用 —— 不改就是「客户端连 ${SERVER_IP:-本机 IP}，端口与本机一致」。"
+        echo
+        info "怎么知道自己该填什么？"
+        info "  · 入站 IP  —— 服务商面板给你的「公网 IP / 连接地址」那一栏"
+        info "  · 端口映射 —— 服务商面板写的「外部端口 ↔ 内部端口」，外部起始填这里"
         hr
-        echo "  1. 设置入站（客户端连接）IP"
-        echo "  2. 设置端口映射起始端口"
-        echo "  3. 清空全部设置（恢复用出站 IP / 本机端口）"
+        if advertise_active; then
+            echo "  1. 设置入站（客户端连接）IP"
+            echo "  2. 设置端口映射起始端口"
+            echo "  3. 清空全部设置（恢复用出站 IP / 本机端口）"
+        else
+            echo "  1. 设置入站（客户端连接）IP        ${DIM}← 连不上先试这个${RESET}"
+            echo "  2. 设置端口映射起始端口            ${DIM}← 端口对不上再试这个${RESET}"
+            echo "  3. 清空全部设置${DIM}（当前未设置，无需清空）${RESET}"
+        fi
         echo "  0. 返回"
         read -r -p "请选择： " ac || ac=""
         case "$ac" in
@@ -560,7 +572,8 @@ advertise_menu(){
             if _is_ip_literal "$_ai"; then
               ADVERTISE_IP="$_ai"; save_settings; export_all 2>/dev/null
               ok "入站 IP 已设为：${ADVERTISE_IP}"
-              info "已重新生成全部链接与订阅 —— 客户端现在会连这个地址"
+              info "已重新生成全部链接与订阅"
+              info "客户端请重新拉一次订阅（或重新扫码）—— 旧的订阅/链接里还是老地址"
             else
               warn "不是合法的 IP 地址（请填 IPv4 或 IPv6 字面量，不要带端口 / 域名）"
             fi
@@ -590,6 +603,7 @@ advertise_menu(){
               ADVERTISE_PORT_BASE="$_ap"; save_settings; export_all 2>/dev/null
               ok "端口映射起点已设为：${ADVERTISE_PORT_BASE}"
               info "本机 ${MIN_TCP}-${MAX_TCP} → 客户端 $(advertise_port "$MIN_TCP")-$(advertise_port "$MAX_TCP")"
+              info "客户端请重新拉一次订阅（或重新扫码）—— 旧的订阅/链接里还是老端口"
             else
               warn "端口无效（应为 1-65535 的数字）"
             fi
@@ -763,6 +777,11 @@ load_settings(){
     port_in_range "$DEFAULT_TCP_START" tcp || DEFAULT_TCP_START="$MIN_TCP"
     port_in_range "$DEFAULT_UDP_START" udp || DEFAULT_UDP_START="$MIN_UDP"
     FINGERPRINT="${FINGERPRINT:-chrome}"
+    LINK_CERT_INSECURE="$(printf '%s' "${LINK_CERT_INSECURE:-auto}" | tr 'A-Z' 'a-z')"
+    case "$LINK_CERT_INSECURE" in
+        auto|pcs|insecure) : ;;
+        *) LINK_CERT_INSECURE="auto" ;;
+    esac
     UOT_ENABLED="${UOT_ENABLED:-0}"
     PREFERRED_SNI="${PREFERRED_SNI:-}"
     NODE_NAME_PREFIX="${NODE_NAME_PREFIX:-}"
@@ -790,6 +809,7 @@ MAX_TCP=$MAX_TCP
 MIN_UDP=$MIN_UDP
 MAX_UDP=$MAX_UDP
 FINGERPRINT=$FINGERPRINT
+LINK_CERT_INSECURE=$LINK_CERT_INSECURE
 UOT_ENABLED=$UOT_ENABLED
 PREFERRED_SNI=$PREFERRED_SNI
 NODE_NAME_PREFIX=$NODE_NAME_PREFIX
@@ -2191,7 +2211,10 @@ link_for_node(){
     local flow_q=""
     local pcs_q="" _ai=0
     local _pcs=""
-    if [ "${LINK_ALLOW_INSECURE:-0}" = "1" ]; then
+    local _allow_ins="${LINK_ALLOW_INSECURE:-0}"
+    [ "${LINK_CERT_INSECURE:-auto}" = "insecure" ] && _allow_ins=1
+    if [ "${LINK_CERT_INSECURE:-auto}" = "pcs" ]; then _allow_ins=0; fi
+    if [ "$_allow_ins" = "1" ]; then
         pcs_q="&allowInsecure=1&insecure=1"
         _ai=1
     else
@@ -2622,6 +2645,7 @@ export_shadowrocket(){
     : >"$plain"
     local row link
     local LINK_ALLOW_INSECURE=1
+    [ "${LINK_CERT_INSECURE:-auto}" = "pcs" ] && LINK_ALLOW_INSECURE=0
     local LINK_SKIP_HTTP_PROXY=1
     while IFS= read -r row; do
         link="$(link_for_node "$row" 2>/dev/null)" || link=""
@@ -4256,6 +4280,11 @@ client_menu(){
     else
         kv "节点命名" "${DIM}<协议类型>（未探测到国家）${RESET}"
     fi
+    case "${LINK_CERT_INSECURE:-auto}" in
+        auto)     kv "证书放行" "${GREEN}自动${RESET}  ${DIM}（各客户端开箱即用，默认）${RESET}" ;;
+        pcs)      kv "证书放行" "${CYAN}指纹钉死 (pcs)${RESET}  ${DIM}（最安全，小火箭需手动开）${RESET}" ;;
+        insecure) kv "证书放行" "${YELLOW}统一跳过校验${RESET}  ${DIM}（最省事，v2rayN 请改用指纹）${RESET}" ;;
+    esac
     if advertise_active; then
         kv "客户端地址" "$(adv_ip_display)" "$CYAN"
         if [ -n "${SERVER_IP:-}" ] && [ "$(advertise_ip)" != "$SERVER_IP" ]; then
@@ -4270,8 +4299,10 @@ client_menu(){
     echo "  3. SNI 域名优选（实测 TLS 握手，自动选最快的）"
     echo "  4. 手动指定默认 SNI 域名"
     echo "  5. 节点命名（默认 国家/地区 + 协议类型，可自定义前缀）"
-    echo "  6. 入站 IP / 端口映射（入站出站 IP 不同、或端口被映射时用）"
+    echo "  6. 证书放行策略（自签证书要不要跳过校验）"
     echo "  0. 返回"
+    echo
+    info "要找「入站 IP / 端口映射」？已移到主菜单第 6 项。"
     read -r -p "请选择： " c || c=""
     case "$c" in
       1)
@@ -4398,14 +4429,57 @@ client_menu(){
           *) warn "无效选项"; sleep 1; continue ;;
         esac
         pause ;;
-      6)
-        advertise_menu ;;
+      6) cert_insecure_menu ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
   done
 }
 
+cert_insecure_menu(){
+  while :; do
+    clear
+    panel "证书放行策略"
+    local _cur="${LINK_CERT_INSECURE:-auto}"
+    case "$_cur" in
+        auto)     kv "当前策略" "${GREEN}自动${RESET}" ;;
+        pcs)      kv "当前策略" "${CYAN}指纹钉死 (pcs)${RESET}" ;;
+        insecure) kv "当前策略" "${YELLOW}统一跳过校验${RESET}" ;;
+    esac
+    hr
+    info "用的是自签证书（CN=服务器IP），客户端默认不信任，必须被告知放行。"
+    info "但「放行」有三种互不兼容的写法，一条链接只能带一种："
+    echo
+    echo "    ${CYAN}pcs=<证书指纹>${RESET}   Xray / v2rayN 系（新版 Xray 唯一官方写法）"
+    echo "    ${CYAN}insecure=1${RESET}       sing-box 系（Hiddify / NekoBox / Karing）"
+    echo "    ${CYAN}allowInsecure=1${RESET}  通用 / 小火箭（Shadowrocket）"
+    echo
+    info "所以做不到「所有客户端一个参数全搞定」—— 只能各出口各配一套。"
+    info "默认的「自动」就是替你把这件事做了，正常情况下你不用动这里。"
+    hr
+    echo "  1. 自动（推荐）  —— 各客户端开箱即用，默认"
+    echo "  2. 指纹钉死 pcs  —— 最安全；适合只用 v2rayN，小火箭需自己开"
+    echo "  3. 统一跳过校验  —— 最省事；适合只用小火箭/sing-box 系，v2rayN 会启动失败"
+    echo "  0. 返回"
+    read -r -p "请选择： " cc || cc=""
+    case "$cc" in
+      1) LINK_CERT_INSECURE=auto ;;
+      2) LINK_CERT_INSECURE=pcs ;;
+      3) LINK_CERT_INSECURE=insecure ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1; continue ;;
+    esac
+    save_settings; export_all 2>/dev/null
+    ok "证书放行策略已设为：${LINK_CERT_INSECURE}"
+    case "$LINK_CERT_INSECURE" in
+      auto)     info "已重新生成订阅 —— 各客户端按自己的生态拿到对应写法，无需手动开" ;;
+      pcs)      info "已重新生成订阅 —— 链接里带证书指纹；小火箭等不认识它，需手动开「允许不安全」" ;;
+      insecure) info "已重新生成订阅 —— 链接统一带 allowInsecure+insecure" ;;
+    esac
+    info "客户端请重新拉一次订阅（或重新扫码）后生效"
+    pause
+  done
+}
 port_menu(){
   while :; do
     clear
@@ -4834,7 +4908,7 @@ sub_menu(){
         echo "  ${GREEN}●${RESET} 订阅服务已开启，客户端填这一个地址即可："
         echo "    ${CYAN}$(sub_url 2>/dev/null)${RESET}"
     else
-        echo "  ${DIM}○ 订阅服务未开启 —— 开启后可用「一个 URL 适配所有客户端」（见 8，或主菜单 10）${RESET}"
+        echo "  ${DIM}○ 订阅服务未开启 —— 开启后可用「一个 URL 适配所有客户端」（见 8，或主菜单 11）${RESET}"
     fi
     echo
     echo "1. 一键复制全部链接（OSC52）"
@@ -4844,7 +4918,7 @@ sub_menu(){
     echo "5. 查看 / 复制 小火箭 / 通用订阅（纯标准链接，v2rayA 等也用它）"
     echo "6. 查看 sing-box 配置"
     echo "7. 订阅链接二维码（手机扫码导入）"
-    echo "8. 订阅服务（后端 / 订阅 URL / 日志 —— 主菜单 10 也是它）"
+    echo "8. 订阅服务（后端 / 订阅 URL / 日志 —— 主菜单 11 也是它）"
     echo "0. 返回"
     read -r -p "请选择： " x || x=""
     case "$x" in
@@ -5018,7 +5092,7 @@ menu(){
         local _subres="$(sub_resource 2>/dev/null)"
         kv "订阅服务" "$(status_dot 1) ${GREEN}运行中${RESET}  ${DIM}:${SUBHTTP_LISTEN:-8088}${RESET}  ${_subres}"
     else
-        kv "订阅服务" "$(status_dot 0) ${DIM}未开启${RESET}  ${DIM}(菜单 10 开启)${RESET}"
+        kv "订阅服务" "$(status_dot 0) ${DIM}未开启${RESET}  ${DIM}(菜单 11 开启)${RESET}"
     fi
     kv "系统" "${OS} ${VER}"
     kv "服务器" "${COUNTRY_NAME:-未知}${COUNTRY_CODE:+ ($COUNTRY_CODE)}"
@@ -5051,6 +5125,7 @@ menu(){
     echo
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "端口范围 / 默认端口"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "网络检测 / UDP 模式"; i=$((i+1))
+    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "入站 IP / 端口映射（客户端连不上时用）"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "客户端设置（指纹 / UoT / SNI）"; i=$((i+1))
     echo
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "服务管理（启停 / 重启 / 配置检查）"; i=$((i+1))
@@ -5105,15 +5180,16 @@ menu(){
             ;;
         esac
         pause ;;
-      6) client_menu ;;
-      7) service_menu ;;
-      8) singbox_menu ;;
-      9) sub_menu ;;
-      10) subhttp_menu ;;
-      11) clear; system_info; pause ;;
-      12) self_repair ;;
-      13) uninstall ;;
-      14) check_update ;;
+      6) advertise_menu ;;
+      7) client_menu ;;
+      8) service_menu ;;
+      9) singbox_menu ;;
+      10) sub_menu ;;
+      11) subhttp_menu ;;
+      12) clear; system_info; pause ;;
+      13) self_repair ;;
+      14) uninstall ;;
+      15) check_update ;;
       0) exit 0 ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
