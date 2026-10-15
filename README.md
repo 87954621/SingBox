@@ -12,8 +12,12 @@
 # 方式一：下载后运行（推荐）
 bash sing-box.sh
 
-# 方式二：一键安装（把 URL 换成你的实际地址）
+# 方式二：一键安装
 bash <(curl -fsSL https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh)
+```
+
+```
+wget -qO- https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh | bash
 ```
 
 装完后用 `sb` 进入菜单：
