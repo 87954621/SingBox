@@ -78,7 +78,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.6"
+VERSION="V3.9.8"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -377,7 +377,8 @@ detect_os(){
         *) warn "未验证系统：$OS；脚本仍会尝试运行" ;;
     esac
     if command -v systemctl >/dev/null 2>&1; then INIT="systemd"
-    elif command -v rc-service >/dev/null 2>&1; then INIT="openrc"
+    elif command -v rc-service >/dev/null 2>&1 \
+         || [ -x /sbin/rc-service ] || [ -x /usr/sbin/rc-service ]; then INIT="openrc"
     else INIT="none"; fi
     detect_nginx_dir
     cleanup_legacy_nginx_conf
@@ -3259,12 +3260,20 @@ class H(http.server.BaseHTTPRequestHandler):
             return
 
         ua = (self.headers.get("User-Agent") or "").lower()
+        # 是否以「附件」形式返回（浏览器点开即下载）。
+        as_file = False
         # UA 分流：不同客户端要不同格式。
         # /sub/<TOKEN>/std —— 通用订阅：**不看 UA**，固定纯标准链接。
         # 给 v2rayA 这类我们没枚举、UA 也不固定的客户端兜底（否则它们会落到
         # 下面的 else，拿到 v2rayN 私有格式 v2rayn:// → 只认出部分节点）。
         if "std" in parts:
             body, ctype = SROCKET(), "text/plain; charset=utf-8"
+        elif "clash" in parts:
+            # /sub/<TOKEN>/clash —— 浏览器直接下载 Clash 配置，同样不看 UA。
+            # 浏览器 UA 不是 clash，走 UA 分流会拿到 v2rayN 的 base64，
+            # 用户要的是「一个能导入的文件」，所以这里按路径强制给 YAML。
+            body, ctype = CLASH(), "text/yaml; charset=utf-8"
+            as_file = True
         elif "clash" in ua or "mihomo" in ua or "verge" in ua or "stash" in ua:
             body, ctype = CLASH(), "text/yaml; charset=utf-8"
         elif "sing-box" in ua or "singbox" in ua or "sfa" in ua or "sfi" in ua or "sfm" in ua:
@@ -3293,6 +3302,10 @@ class H(http.server.BaseHTTPRequestHandler):
         # 这里再让中间层/客户端少打请求，进一步降低常驻服务的负载。
         # no-cache 而不是 no-store：改了节点后客户端刷新仍能拿到新的。
         self.send_header("Cache-Control", "no-cache, max-age=300")
+        if as_file:
+            # 浏览器点开地址直接下载，而不是在页面里摊开一大段 YAML。
+            self.send_header("Content-Disposition",
+                             'attachment; filename="clash.yaml"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -3611,6 +3624,20 @@ ${allowdeny}
         add_header Subscription-Userinfo "upload=0; download=0; total=0; expire=0" always;
         add_header Profile-Update-Interval "24" always;
         add_header Cache-Control "no-cache, max-age=300" always;
+    }
+    # 浏览器直接下载 Clash 配置：路径里带 /clash 就**不看 UA**，
+    # 以附件形式返回，点开地址即下载 clash.yaml。
+    # 为什么需要它：按 UA 分流那条只对「客户端拉订阅」有效，浏览器 UA 是
+    # Chrome / Firefox，会落到 default 拿到 v2rayN 的 base64 —— 用户想要的
+    # 是「一个文件」，不是一段文本。
+    location = /sub/${tok}/clash {
+        alias ${SUBDIR}/clash.yaml;
+        types {
+            text/yaml            yaml;
+        }
+        default_type text/yaml;
+        add_header Content-Disposition "attachment; filename=clash.yaml" always;
+        add_header Cache-Control "no-store" always;
     }
     location / {
         return 404;
@@ -3968,6 +3995,12 @@ sub_url_std(){
     local tok port
     tok="$(sub_token)"; port="${SUBHTTP_LISTEN:-8088}"
     printf 'http://%s:%s/sub/%s/std' "$(advertise_ip)" "$port" "$tok"
+}
+
+clash_file_url(){
+    local tok port
+    tok="$(sub_token)"; port="${SUBHTTP_LISTEN:-8088}"
+    printf 'http://%s:%s/sub/%s/clash' "$(advertise_ip)" "$port" "$tok"
 }
 sub_show_log(){
     local elog="/var/log/nginx/error.log" logtext=""
@@ -4429,19 +4462,16 @@ argo_svc_restart(){
     case "${INIT:-none}" in
       systemd)
         systemctl reset-failed "$ARGO_UNIT" >/dev/null 2>&1
-        systemctl restart "$ARGO_UNIT" >/dev/null 2>&1 || return 1
+        if ! systemctl restart "$ARGO_UNIT" >/dev/null 2>&1; then
+            _argo_spawn_bg
+        fi
         ;;
       openrc)
         rc-service "$ARGO_UNIT" restart >/dev/null 2>&1 || return 1
         ;;
       *)
         argo_svc_stop >/dev/null 2>&1
-        if command -v setsid >/dev/null 2>&1; then
-            setsid "${BASE}/argo-run.sh" >/dev/null 2>&1 &
-        else
-            nohup "${BASE}/argo-run.sh" >/dev/null 2>&1 &
-        fi
-        echo $! >"/run/${ARGO_UNIT}.pid" 2>/dev/null || true
+        _argo_spawn_bg
         ;;
     esac
     sleep 1
@@ -4450,7 +4480,12 @@ argo_svc_restart(){
 
 argo_svc_running(){
     case "${INIT:-none}" in
-      systemd) systemctl is-active --quiet "$ARGO_UNIT" 2>/dev/null ;;
+      systemd)
+        systemctl is-active --quiet "$ARGO_UNIT" 2>/dev/null && return 0
+        local _p
+        _p="$(cat "/run/${ARGO_UNIT}.pid" 2>/dev/null || echo "")"
+        [ -n "$_p" ] && kill -0 "$_p" 2>/dev/null
+        ;;
       openrc)  rc-service "$ARGO_UNIT" status >/dev/null 2>&1 ;;
       *)
         local pid
@@ -4460,9 +4495,21 @@ argo_svc_running(){
     esac
 }
 
+_argo_spawn_bg(){
+    if command -v setsid >/dev/null 2>&1; then
+        setsid "${BASE}/argo-run.sh" >/dev/null 2>&1 &
+    else
+        nohup "${BASE}/argo-run.sh" >/dev/null 2>&1 &
+    fi
+    echo $! >"/run/${ARGO_UNIT}.pid" 2>/dev/null || true
+}
+
 argo_svc_stop(){
     case "${INIT:-none}" in
-      systemd) argo_svc_stop >/dev/null 2>&1 ;;
+      systemd)
+        systemctl stop "$ARGO_UNIT" >/dev/null 2>&1
+        systemctl disable "$ARGO_UNIT" >/dev/null 2>&1
+        ;;
       openrc)
         rc-service "$ARGO_UNIT" stop >/dev/null 2>&1
         rc-update del "$ARGO_UNIT" default >/dev/null 2>&1
@@ -4480,6 +4527,7 @@ argo_svc_stop(){
 argo_svc_remove(){
     argo_svc_stop
     rm -f "/etc/systemd/system/${ARGO_UNIT}.service" "/etc/init.d/${ARGO_UNIT}" 2>/dev/null
+    rm -f "/run/${ARGO_UNIT}.pid" 2>/dev/null
     if [ "${INIT:-none}" = systemd ]; then systemctl daemon-reload >/dev/null 2>&1; fi
     return 0
 }
@@ -4662,7 +4710,8 @@ argo_refresh_temp_domain(){
 argo_menu(){
   while :; do
     clear
-    panel "Argo 隧道（Cloudflare 内网穿透）"
+    panel "Argo 隧道"
+    info "Cloudflare 内网穿透 —— 本机不开端口，也不需要 443"
     local _cnt
     _cnt="$(jq '[.[] | select((.argo // "") != "")] | length' "$NODES" 2>/dev/null || echo 0)"
     kv "Argo 节点" "${_cnt} 个"
@@ -4746,9 +4795,7 @@ argo_menu(){
         fi
         pause ;;
       4)
-        argo_svc_stop >/dev/null 2>&1
-        rm -f "/etc/systemd/system/${ARGO_UNIT}.service"
-        systemctl daemon-reload >/dev/null 2>&1
+        argo_svc_remove >/dev/null 2>&1
         ok "Argo 服务已停止并移除"
         info "节点记录还在（订阅里仍有这些节点），要删请到「节点管理」"
         pause ;;
@@ -5866,6 +5913,7 @@ clash_sub_menu(){
     echo
     echo "1. 查看 Clash 配置（clash.yaml）"
     echo "2. 复制 Clash 订阅到剪贴板"
+    echo "3. 下载 Clash 配置文件（浏览器直接下载 / scp）"
     echo "0. 返回"
     read -r -p "请选择： " q || q=""
     case "$q" in
@@ -5873,6 +5921,41 @@ clash_sub_menu(){
       2) export_clash >/dev/null 2>&1
          if [ ! -s "$SUBDIR/clash_subscribe.txt" ]; then warn "暂无节点"; pause; continue; fi
          copy_text "$(cat "$SUBDIR/clash_subscribe.txt")"; pause ;;
+      3)
+        export_clash >/dev/null 2>&1
+        if [ ! -s "$SUBDIR/clash.yaml" ]; then warn "暂无节点，先生成配置再说"; pause; continue; fi
+        local _sz _url
+        _sz="$(wc -c <"$SUBDIR/clash.yaml" 2>/dev/null | tr -d ' \t')"
+        _url="$(clash_file_url 2>/dev/null)"
+        echo
+        ok "已生成：${SUBDIR}/clash.yaml  （${_sz} 字节）"
+        echo
+        echo "  ${BOLD}方式一：浏览器直接下载${RESET}"
+        if [ "$(sub_status 2>/dev/null)" = "on" ]; then
+            echo "    ${CYAN}${_url}${RESET}"
+            echo "    ${DIM}用浏览器打开这个地址 → 直接下载 clash.yaml（不用填进客户端）${RESET}"
+            if have_qrencode; then
+                echo
+                echo "    ${DIM}手机不方便输地址就扫这个码：${RESET}"
+                qr_terminal "$_url" 2>/dev/null || true
+            fi
+        else
+            echo "    ${YELLOW}订阅服务没开，这个地址现在打不开${RESET}"
+            echo "    ${DIM}先到「订阅服务」（主菜单 11）启动，再用：${RESET}"
+            echo "    ${DIM}${_url}${RESET}"
+        fi
+        echo
+        echo "  ${BOLD}方式二：从电脑把文件拉下来（scp）${RESET}"
+        echo "    ${CYAN}scp root@$(advertise_ip 2>/dev/null):${SUBDIR}/clash.yaml .${RESET}"
+        echo "    ${DIM}订阅服务没开也能用这一招${RESET}"
+        echo
+        echo "  ${BOLD}方式三：就在这台机器上导出${RESET}"
+        echo "    ${CYAN}cp ${SUBDIR}/clash.yaml ~/clash.yaml${RESET}"
+        echo
+        info "导入：Clash Verge / mihomo / Stash → 配置 → 导入本地文件"
+        warn "本地文件不会自动更新 —— 以后改了节点要重新下载；"
+        info "想让它自己跟着变，就用「订阅地址」而不是文件（客户端定时拉取）"
+        pause ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
@@ -5925,8 +6008,14 @@ menu(){
 
     local alive=0
     service_alive && alive=1
-    local nodecount
-    nodecount="$(jq 'length' "$NODES" 2>/dev/null || echo 0)"
+    local nodecount _argocnt _jqpair
+    _jqpair="$(jq -r '[length, ([.[] | select((.argo // "") != "")] | length)] | @tsv' "$NODES" 2>/dev/null)"
+    if [ -n "$_jqpair" ]; then
+        IFS=$'\t' read -r nodecount _argocnt <<<"$_jqpair"
+    else
+        nodecount=0; _argocnt=0
+    fi
+    nodecount="${nodecount:-0}"; _argocnt="${_argocnt:-0}"
     local s_sum s_st s_upt s_mem s_pid s_ver s_en s_cpu
     s_sum="$(service_summary)"
     IFS='|' read -r s_st s_upt s_mem s_pid s_ver s_en s_cpu <<<"$s_sum"
@@ -5939,6 +6028,13 @@ menu(){
         kv "订阅服务" "$(status_dot 1) ${GREEN}运行中${RESET}  ${DIM}:${SUBHTTP_LISTEN:-8088}${RESET}  ${_subres}"
     else
         kv "订阅服务" "$(status_dot 0) ${DIM}未开启${RESET}  ${DIM}(菜单 11 开启)${RESET}"
+    fi
+    if [ "${_argocnt:-0}" -gt 0 ] 2>/dev/null; then
+        if argo_svc_running 2>/dev/null; then
+            kv "Argo 隧道" "$(status_dot 1) ${GREEN}运行中${RESET}  ${DIM}${_argocnt} 个节点${RESET}"
+        else
+            kv "Argo 隧道" "$(status_dot 0) ${RED}已停止${RESET}  ${DIM}${_argocnt} 个节点（主菜单 12 启动）${RESET}"
+        fi
     fi
     kv "系统" "${OS} ${VER}"
     kv "服务器" "${COUNTRY_NAME:-未知}${COUNTRY_CODE:+ ($COUNTRY_CODE)}"
@@ -5978,6 +6074,7 @@ menu(){
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "sing-box 管理（内核版本 / 升级 / 重装）"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "订阅与节点链接"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "订阅服务（后端 / 订阅 URL / 日志）"; i=$((i+1))
+    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "Argo 隧道（CF 内网穿透 / 隧道状态）"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "系统信息"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "自检 / 修复"; i=$((i+1))
     printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "完全卸载（内核 + 配置 + 节点 + 本脚本）"; i=$((i+1))
@@ -6032,10 +6129,11 @@ menu(){
       9) singbox_menu ;;
       10) sub_menu ;;
       11) subhttp_menu ;;
-      12) clear; system_info; pause ;;
-      13) self_repair ;;
-      14) uninstall ;;
-      15) check_update ;;
+      12) argo_menu ;;
+      13) clear; system_info; pause ;;
+      14) self_repair ;;
+      15) uninstall ;;
+      16) check_update ;;
       0) exit 0 ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
