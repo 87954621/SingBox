@@ -78,7 +78,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.8"
+VERSION="V3.9.10"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -3462,6 +3462,56 @@ nginx_install(){
     nginx_available
 }
 
+_cf_pkg_owned(){
+    local bin="$1"
+    [ -n "$bin" ] || return 1
+    command -v dpkg   >/dev/null 2>&1 && dpkg -S "$bin" >/dev/null 2>&1 && return 0
+    command -v rpm    >/dev/null 2>&1 && rpm -qf "$bin"  >/dev/null 2>&1 && return 0
+    command -v apk    >/dev/null 2>&1 && apk info --who-owns "$bin" >/dev/null 2>&1 && return 0
+    command -v pacman >/dev/null 2>&1 && pacman -Qo "$bin" >/dev/null 2>&1 && return 0
+    return 1
+}
+
+cf_uninstall__errlog="/tmp/singbox-nat-cloudflared-uninstall.log"
+cloudflared_uninstall(){
+    local bin
+    bin="$(command -v cloudflared 2>/dev/null)"
+    : >"$cf_uninstall__errlog" 2>/dev/null || true
+
+    if [ -n "$bin" ] && _cf_pkg_owned "$bin"; then
+        case "$OS" in
+            debian|ubuntu|armbian|raspbian)
+                DEBIAN_FRONTEND=noninteractive apt-get purge -y cloudflared \
+                    >>"$cf_uninstall__errlog" 2>&1 ;;
+            centos|rhel|rocky|almalinux|fedora|amazon|ol)
+                if command -v dnf >/dev/null 2>&1; then
+                    dnf remove -y cloudflared >>"$cf_uninstall__errlog" 2>&1
+                elif command -v yum >/dev/null 2>&1; then
+                    yum remove -y cloudflared >>"$cf_uninstall__errlog" 2>&1
+                else return 1; fi ;;
+            alpine)
+                apk del cloudflared >>"$cf_uninstall__errlog" 2>&1 ;;
+            arch|manjaro)
+                pacman -R --noconfirm cloudflared >>"$cf_uninstall__errlog" 2>&1 ;;
+            opensuse*|suse|sles)
+                zypper remove -y cloudflared >>"$cf_uninstall__errlog" 2>&1 ;;
+            *) return 1 ;;
+        esac
+    elif [ -n "$bin" ]; then
+        [ -L "$bin" ] && rm -f "$bin" 2>/dev/null
+        rm -f "$bin" 2>/dev/null
+        rm -f /usr/local/bin/cloudflared /usr/bin/cloudflared 2>/dev/null
+    fi
+
+    hash -r 2>/dev/null || true
+    if command -v cloudflared >/dev/null 2>&1; then
+        warn "cloudflared 卸载失败，日志（末 15 行）："
+        tail -n 15 "$cf_uninstall__errlog" 2>/dev/null | sed 's/^/    /'
+        return 1
+    fi
+    return 0
+}
+
 nginx_unload__errlog="/tmp/singbox-nat-nginx-uninstall.log"
 nginx_uninstall(){
     : > "$nginx_unload__errlog" 2>/dev/null || true
@@ -3947,8 +3997,13 @@ sub_resource(){
     else
         pids="$(pgrep -f "$SUBHTTP_PY" 2>/dev/null)"
     fi
+    _proc_resource "$pids" "$BASE/.subres.cache"
+}
+
+_proc_resource(){
+    local pids="$1" cache="$2"
     [ -n "$pids" ] || return 0
-    local cache="$BASE/.subres.cache" now ts="" val=""
+    local now ts="" val=""
     now="$(date +%s 2>/dev/null)"
     ts="$(awk -F'|' 'NR==1{print $1}' "$cache" 2>/dev/null)"
     if [ -n "$ts" ] && [ "$((now - ts))" -lt 5 ]; then
@@ -3984,6 +4039,15 @@ sub_resource(){
     local out="内存 ${mem}M  CPU ${cpu}%"
     printf '%s|%s' "$now" "$out" > "$cache" 2>/dev/null
     printf '%s' "$out"
+}
+
+argo_resource(){
+    local pids="" _pidf="/run/${ARGO_UNIT}.pid"
+    [ -r "$_pidf" ] && pids="$(tr -d ' \n' <"$_pidf" 2>/dev/null)"
+    if [ -z "$pids" ] || ! kill -0 "$pids" 2>/dev/null; then
+        pids="$(pgrep -f 'cloudflared.*tunnel' 2>/dev/null | tr '\n' ' ')"
+    fi
+    _proc_resource "$pids" "$BASE/.argores.cache"
 }
 sub_url(){
     local tok port
@@ -6031,7 +6095,9 @@ menu(){
     fi
     if [ "${_argocnt:-0}" -gt 0 ] 2>/dev/null; then
         if argo_svc_running 2>/dev/null; then
-            kv "Argo 隧道" "$(status_dot 1) ${GREEN}运行中${RESET}  ${DIM}${_argocnt} 个节点${RESET}"
+            local _argores
+            _argores="$(argo_resource 2>/dev/null)"
+            kv "Argo 隧道" "$(status_dot 1) ${GREEN}运行中${RESET}  ${DIM}${_argocnt} 个节点${RESET}  ${_argores}"
         else
             kv "Argo 隧道" "$(status_dot 0) ${RED}已停止${RESET}  ${DIM}${_argocnt} 个节点（主菜单 12 启动）${RESET}"
         fi
@@ -6214,6 +6280,12 @@ uninstall(){
     clear
     panel "卸载 Sing-box NAT"
     echo "将删除：sing-box、sb、配置、节点、订阅、服务、证书和日志，以及本脚本添加的订阅站点配置。"
+    echo "        以及 Argo 隧道服务（停止 cloudflared、摘除它的开机自启配置）。"
+    if [ -x "${BASE}/cloudflared" ]; then
+        echo "        cloudflared 是本脚本下载到脚本目录的，会一并删除。"
+    elif command -v cloudflared >/dev/null 2>&1; then
+        echo "        ${DIM}cloudflared 是本脚本之外装的，稍后会问你要不要一并卸载。${RESET}"
+    fi
     echo "不会主动修改系统已有防火墙规则。"
     read -r -p "输入 DELETE 确认： " x || x=""
     [ "$x" = DELETE ] || { echo "已取消"; pause; return; }
@@ -6231,6 +6303,32 @@ uninstall(){
     pkill -f "$BIN run -c $CONF" 2>/dev/null || true
 
     argo_svc_remove >/dev/null 2>&1 || true
+
+    if [ ! -x "${BASE}/cloudflared" ]; then
+        local _cfbin
+        _cfbin="$(command -v cloudflared 2>/dev/null)"
+        if [ -n "$_cfbin" ]; then
+            echo
+            echo "  ${YELLOW}⚠ 本机还装有 cloudflared：${_cfbin}${RESET}"
+            if _cf_pkg_owned "$_cfbin"; then
+                echo "  ${DIM}它是包管理器装的，卸载会走包管理器（连带清掉安装记录）。${RESET}"
+            else
+                echo "  ${DIM}它是手动下载的散装文件，卸载就是删掉这个二进制。${RESET}"
+            fi
+            echo "  ${DIM}如果你还有别的项目在用它，选 N 保留。${RESET}"
+            read -r -p "  是否同时卸载 cloudflared？[y/N]： " c || c=""
+            case "$c" in
+              [Yy])
+                progress 20 "卸载 cloudflared"
+                if cloudflared_uninstall; then
+                    ok "cloudflared 已卸载"
+                else
+                    warn "cloudflared 卸载失败，请手动执行对应包管理器卸载"
+                fi ;;
+              *) info "已跳过卸载 cloudflared（Argo 服务已停，程序保留）" ;;
+            esac
+        fi
+    fi
 
     progress 30 "清理订阅服务残留"
     rm -f "$NGINX_CONF" "$NGINX_CONF_LEGACY" 2>/dev/null || true
