@@ -70,6 +70,7 @@ REALITY_PRIVATE=""; REALITY_PUBLIC=""
 BATCH_MODE=0; SB_RUN_MENU=0
 BATCH_RESERVE=16
 CURRENT_SNAPSHOT=""; FINGERPRINT="chrome"; UOT_ENABLED="0"
+CLASH_RULE_MODE="full"
 PREFERRED_SNI=""; SNI_OPTIMIZED=""
 NODE_NAME_PREFIX=""
 SINGBOX_CHANNEL="any"
@@ -77,7 +78,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.2"
+VERSION="V3.9.5"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -783,6 +784,16 @@ load_settings(){
         *) LINK_CERT_INSECURE="auto" ;;
     esac
     UOT_ENABLED="${UOT_ENABLED:-0}"
+    CLASH_RULE_MODE="$(printf '%s' "${CLASH_RULE_MODE:-full}" | tr 'A-Z' 'a-z')"
+    case "$CLASH_RULE_MODE" in
+        full|simple) : ;;
+        *) CLASH_RULE_MODE="full" ;;
+    esac
+    ARGO_PROTO="$(printf '%s' "${ARGO_PROTO:-http2}" | tr 'A-Z' 'a-z')"
+    case "$ARGO_PROTO" in
+        http2|quic) : ;;
+        *) ARGO_PROTO="http2" ;;
+    esac
     PREFERRED_SNI="${PREFERRED_SNI:-}"
     NODE_NAME_PREFIX="${NODE_NAME_PREFIX:-}"
     case "${SINGBOX_CHANNEL:-any}" in
@@ -811,6 +822,8 @@ MAX_UDP=$MAX_UDP
 FINGERPRINT=$FINGERPRINT
 LINK_CERT_INSECURE=$LINK_CERT_INSECURE
 UOT_ENABLED=$UOT_ENABLED
+CLASH_RULE_MODE=$CLASH_RULE_MODE
+ARGO_PROTO=$ARGO_PROTO
 PREFERRED_SNI=$PREFERRED_SNI
 NODE_NAME_PREFIX=$NODE_NAME_PREFIX
 SINGBOX_CHANNEL=$SINGBOX_CHANNEL
@@ -1165,12 +1178,13 @@ resolve_node_name(){
 }
 add_node(){
     local plabel="$1" type="$2" proto="$3" port="$4" uuidv="$5" pw="$6" sni="$7" extra="$8" pub="$9" sid="${10}"
+    local argo="${11:-}"
     local name
     name="$(resolve_node_name "$plabel")"
     if ! jq --arg name "$name" --arg plabel "$plabel" --arg type "$type" --arg proto "$proto" --arg port "$port" \
        --arg uuid "$uuidv" --arg password "$pw" --arg sni "$sni" --arg extra "$extra" \
-       --arg public_key "$pub" --arg short_id "$sid" \
-       '. + [{name:$name,proto_label:$plabel,type:$type,proto:$proto,port:($port|tonumber),uuid:$uuid,password:$password,sni:$sni,extra:$extra,public_key:$public_key,short_id:$short_id}]' \
+       --arg public_key "$pub" --arg short_id "$sid" --arg argo "$argo" \
+       '. + [{name:$name,proto_label:$plabel,type:$type,proto:$proto,port:($port|tonumber),uuid:$uuid,password:$password,sni:$sni,extra:$extra,public_key:$public_key,short_id:$short_id,argo:$argo}]' \
        "$NODES" > "$NODES.tmp"; then
         rm -f "$NODES.tmp"
         warn "节点记录写入失败（nodes.json 未改动），本次部署将回滚"
@@ -2208,6 +2222,9 @@ link_for_node(){
     local _adv_ip _adv_port
     _adv_ip="$(advertise_ip)"
     _adv_port="$(advertise_port "$port")"
+    local argo_dom
+    argo_dom="$(jq -r '.argo // empty' <<<"$row")"
+    [ -n "$argo_dom" ] && { _adv_ip="$argo_dom"; _adv_port=443; }
     local flow_q=""
     local pcs_q="" _ai=0
     local _pcs=""
@@ -2239,6 +2256,8 @@ link_for_node(){
         printf '%s\n' "vless://${uuidv}@${_adv_ip}:${_adv_port}?encryption=none&security=reality&sni=$(urlencode "$sni")&fp=${FINGERPRINT:-chrome}${flow_q}&pbk=${pub}&sid=${sid}&type=tcp&headerType=none${uot_q}#$(urlencode "$name")" ;;
       vless-ws-tls)
         printf '%s\n' "vless://${uuidv}@${_adv_ip}:${_adv_port}?encryption=none&security=tls&type=ws&host=$(urlencode "$sni")&sni=$(urlencode "$sni")&path=$(urlencode "$extra")${pcs_q}${uot_q}#$(urlencode "$name")" ;;
+      vless-ws-argo)
+        printf '%s\n' "vless://${uuidv}@${_adv_ip}:${_adv_port}?encryption=none&security=tls&type=ws&host=$(urlencode "$sni")&sni=$(urlencode "$sni")&path=$(urlencode "$extra")#$(urlencode "$name")" ;;
       vmess-ws-tls)
         if [ "$UOT_ENABLED" = "1" ]; then
             jq -n --arg v "2" --arg ps "$name" --arg add "$_adv_ip" --argjson port "$_adv_port" --arg id "$uuidv" --arg host "$sni" --arg path "$extra" --arg pcs "$_pcs" --argjson ai "$_ai" '{v:$v,ps:$ps,add:$add,port:$port,id:$id,aid:0,scy:"auto",net:"ws",type:"none",host:$host,path:$path,tls:"tls",sni:$host,alpn:"",fp:""} + (if $ai == 1 then {"allowInsecure":true} else {pcs:$pcs} end) + {"udp-over-tcp":true,"udp-over-tcp-version":2}' | b64 | sed 's/^/vmess:\/\//'
@@ -2427,6 +2446,340 @@ sub_qr_menu(){
     done
 }
 
+clash_proxy_groups(){
+    local names="$1"
+    local nl="${names:-      - DIRECT}"
+    cat <<'YAML'
+proxy-groups:
+  - name: "🔰 节点选择"
+    type: select
+    proxies:
+      - "♻️ 自动选择"
+YAML
+    printf '%s\n' "$nl"
+    cat <<'YAML'
+  - name: "♻️ 自动选择"
+    type: url-test
+    url: "https://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    proxies:
+YAML
+    printf '%s\n' "$nl"
+    cat <<'YAML'
+  - name: "🎯 全球直连"
+    type: select
+    proxies:
+      - DIRECT
+      - "🔰 节点选择"
+  - name: "🛑 全球拦截"
+    type: select
+    proxies:
+      - REJECT
+      - DIRECT
+  - name: "🌍 国外媒体"
+    type: select
+    proxies:
+      - "🔰 节点选择"
+      - "♻️ 自动选择"
+      - "🎯 全球直连"
+  - name: "🌏 国内媒体"
+    type: select
+    proxies:
+      - "🎯 全球直连"
+      - "🔰 节点选择"
+  - name: "📲 电报信息"
+    type: select
+    proxies:
+      - "🔰 节点选择"
+      - "🎯 全球直连"
+  - name: "🐟 漏网之鱼"
+    type: select
+    proxies:
+      - "🔰 节点选择"
+      - "🎯 全球直连"
+      - DIRECT
+YAML
+}
+
+clash_rule_providers(){
+    cat <<'YAML'
+rule-providers:
+  # ===== AI =====
+  OpenAI:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/OpenAI/OpenAI.yaml"
+    path: ./ruleset/OpenAI.yaml
+    interval: 86400
+  Claude:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Claude/Claude.yaml"
+    path: ./ruleset/Claude.yaml
+    interval: 86400
+  # ===== 开发 =====
+  GitHub:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/GitHub/GitHub.yaml"
+    path: ./ruleset/GitHub.yaml
+    interval: 86400
+  # ===== 流媒体 =====
+  YouTube:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/YouTube/YouTube.yaml"
+    path: ./ruleset/YouTube.yaml
+    interval: 86400
+  Netflix:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Netflix/Netflix.yaml"
+    path: ./ruleset/Netflix.yaml
+    interval: 86400
+  Disney:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Disney/Disney.yaml"
+    path: ./ruleset/Disney.yaml
+    interval: 86400
+  Spotify:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Spotify/Spotify.yaml"
+    path: ./ruleset/Spotify.yaml
+    interval: 86400
+  TikTok:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/TikTok/TikTok.yaml"
+    path: ./ruleset/TikTok.yaml
+    interval: 86400
+  Bilibili:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Bilibili/Bilibili.yaml"
+    path: ./ruleset/Bilibili.yaml
+    interval: 86400
+  Tencent:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Tencent/Tencent.yaml"
+    path: ./ruleset/Tencent.yaml
+    interval: 86400
+  Alibaba_Classical:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Alibaba/Alibaba_Classical.yaml"
+    path: ./ruleset/Alibaba_Classical.yaml
+    interval: 86400
+  # ===== 游戏 / 通讯 / 系统 =====
+  Steam:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Steam/Steam.yaml"
+    path: ./ruleset/Steam.yaml
+    interval: 86400
+  Telegram:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Telegram/Telegram.yaml"
+    path: ./ruleset/Telegram.yaml
+    interval: 86400
+  Microsoft:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Microsoft/Microsoft.yaml"
+    path: ./ruleset/Microsoft.yaml
+    interval: 86400
+  # ===== 广告 / 隐私 / 劫持 =====
+  Advertising_Classical:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Advertising/Advertising_Classical.yaml"
+    path: ./ruleset/Advertising_Classical.yaml
+    interval: 86400
+  Privacy_Classical:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Privacy/Privacy_Classical.yaml"
+    path: ./ruleset/Privacy_Classical.yaml
+    interval: 86400
+  AdGuardSDNSFilter_Classical:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/AdGuardSDNSFilter/AdGuardSDNSFilter_Classical.yaml"
+    path: ./ruleset/AdGuardSDNSFilter_Classical.yaml
+    interval: 86400
+  Hijacking:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Hijacking/Hijacking.yaml"
+    path: ./ruleset/Hijacking.yaml
+    interval: 86400
+  # ===== Loyalsoldier：纯域名 / 纯网段（behavior 与上面不同！）=====
+  reject:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/reject.txt"
+    path: ./ruleset/reject.yaml
+    interval: 86400
+  private:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/private.txt"
+    path: ./ruleset/private.yaml
+    interval: 86400
+  direct:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/direct.txt"
+    path: ./ruleset/direct.yaml
+    interval: 86400
+  proxy:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/proxy.txt"
+    path: ./ruleset/proxy.yaml
+    interval: 86400
+  gfw:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/gfw.txt"
+    path: ./ruleset/gfw.yaml
+    interval: 86400
+  tld-not-cn:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/tld-not-cn.txt"
+    path: ./ruleset/tld-not-cn.yaml
+    interval: 86400
+  apple:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/apple.txt"
+    path: ./ruleset/apple.yaml
+    interval: 86400
+  icloud:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/icloud.txt"
+    path: ./ruleset/icloud.yaml
+    interval: 86400
+  google:
+    type: http
+    behavior: domain
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/google.txt"
+    path: ./ruleset/google.yaml
+    interval: 86400
+  cncidr:
+    type: http
+    behavior: ipcidr
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/cncidr.txt"
+    path: ./ruleset/cncidr.yaml
+    interval: 86400
+  lancidr:
+    type: http
+    behavior: ipcidr
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/lancidr.txt"
+    path: ./ruleset/lancidr.yaml
+    interval: 86400
+  telegramcidr:
+    type: http
+    behavior: ipcidr
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/telegramcidr.txt"
+    path: ./ruleset/telegramcidr.yaml
+    interval: 86400
+  # applications 是 **PROCESS-NAME** 列表（代理客户端 / BT 软件进程名），
+  # 所以 behavior 必须是 classical 而不是 domain —— 这是实测过的。
+  applications:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/Loyalsoldier/clash-rules@release/applications.txt"
+    path: ./ruleset/applications.yaml
+    interval: 86400
+YAML
+}
+
+clash_rules_full(){
+    cat <<'YAML'
+rules:
+  # ① 局域网 / 私有地址
+  - RULE-SET,private,🎯 全球直连,no-resolve
+  - RULE-SET,lancidr,🎯 全球直连,no-resolve
+  # ② 广告 / 隐私 / 域名劫持
+  - RULE-SET,Advertising_Classical,🛑 全球拦截
+  - RULE-SET,Privacy_Classical,🛑 全球拦截
+  - RULE-SET,AdGuardSDNSFilter_Classical,🛑 全球拦截
+  - RULE-SET,reject,🛑 全球拦截
+  - RULE-SET,Hijacking,🛑 全球拦截
+  # ③ 代理客户端 / BT 进程直连（防环路）
+  - RULE-SET,applications,🎯 全球直连
+  # ④ AI
+  - RULE-SET,OpenAI,🔰 节点选择
+  - RULE-SET,Claude,🔰 节点选择
+  # ⑤ 开发
+  - RULE-SET,GitHub,🔰 节点选择
+  # ⑥ 通讯
+  - RULE-SET,Telegram,📲 电报信息
+  - RULE-SET,telegramcidr,📲 电报信息,no-resolve
+  # ⑦ 流媒体
+  - RULE-SET,YouTube,🌍 国外媒体
+  - RULE-SET,Netflix,🌍 国外媒体
+  - RULE-SET,Disney,🌍 国外媒体
+  - RULE-SET,Spotify,🌍 国外媒体
+  - RULE-SET,TikTok,🌍 国外媒体
+  - RULE-SET,Bilibili,🌏 国内媒体
+  - RULE-SET,Tencent,🌏 国内媒体
+  - RULE-SET,Alibaba_Classical,🌏 国内媒体
+  # ⑧ 游戏
+  - RULE-SET,Steam,🔰 节点选择
+  # ⑨ 系统服务
+  - RULE-SET,apple,🎯 全球直连
+  - RULE-SET,icloud,🎯 全球直连
+  - RULE-SET,Microsoft,🎯 全球直连
+  # ⑩ 搜索 / 工具
+  - RULE-SET,google,🔰 节点选择
+  # ⑪ 国内域名与网段（放在 tld-not-cn 之前，否则 .cn 会被后面误判）
+  - RULE-SET,direct,🎯 全球直连
+  - RULE-SET,cncidr,🎯 全球直连,no-resolve
+  # ⑫ 被墙域名 / 非 CN 顶级域
+  - RULE-SET,gfw,🔰 节点选择
+  - RULE-SET,proxy,🔰 节点选择
+  - RULE-SET,tld-not-cn,🔰 节点选择
+  # ⑬ 兜底：剩余国内 IP 直连，其余走漏网之鱼
+  - GEOIP,CN,🎯 全球直连
+  - MATCH,🐟 漏网之鱼
+YAML
+}
+
+clash_rules_simple(){
+    cat <<'YAML'
+rules:
+  - GEOIP,private,🎯 全球直连,no-resolve
+  - GEOSITE,category-ads-all,🛑 全球拦截
+  - GEOSITE,openai,🔰 节点选择
+  - DOMAIN-SUFFIX,claude.ai,🔰 节点选择
+  - DOMAIN-SUFFIX,anthropic.com,🔰 节点选择
+  - GEOSITE,github,🔰 节点选择
+  - GEOSITE,google,🔰 节点选择
+  - GEOSITE,telegram,📲 电报信息
+  - GEOSITE,youtube,🌍 国外媒体
+  - GEOSITE,netflix,🌍 国外媒体
+  - GEOSITE,disney,🌍 国外媒体
+  - GEOSITE,spotify,🌍 国外媒体
+  - GEOSITE,tiktok,🌍 国外媒体
+  - GEOSITE,bilibili,🌏 国内媒体
+  - GEOSITE,tencent,🌏 国内媒体
+  - GEOSITE,apple,🎯 全球直连
+  - GEOSITE,microsoft,🎯 全球直连
+  - GEOSITE,cn,🎯 全球直连
+  - GEOIP,CN,🎯 全球直连
+  - MATCH,🐟 漏网之鱼
+YAML
+}
+
 export_clash(){
     mkdir -p "$SUBDIR"
     get_ip
@@ -2446,6 +2799,9 @@ export_clash(){
         pub="$(jq -r '.public_key // empty' <<<"$row")"; sid="$(jq -r '.short_id // empty' <<<"$row")"
         local _adv_ip _adv_port
         _adv_ip="$(advertise_ip)"; _adv_port="$(advertise_port "$port")"
+        local _argo_dom
+        _argo_dom="$(jq -r '.argo // empty' <<<"$row")"
+        [ -n "$_argo_dom" ] && { _adv_ip="$_argo_dom"; _adv_port=443; }
         local safe_name; safe_name="$(printf '%s' "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')"
         local uot=""
         if [ "$UOT_ENABLED" = "1" ]; then
@@ -2460,6 +2816,7 @@ export_clash(){
           h2-reality)    entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: http, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
           grpc-reality)  entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: grpc, grpc-opts: {grpc-service-name: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
           vless-ws-tls)  entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, ${tls_verify}${uot}}" ;;
+          vless-ws-argo) entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, skip-cert-verify: false${uot}}" ;;
           vmess-ws-tls)  entry="{name: \"${safe_name}\", type: vmess, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, alterId: 0, cipher: auto, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, ${tls_verify}${uot}}" ;;
           trojan)        entry="{name: \"${safe_name}\", type: trojan, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${pw}\", udp: true, sni: ${sni}, client-fingerprint: ${fp}, ${tls_verify}${uot}}" ;;
           anytls)        entry="{name: \"${safe_name}\", type: anytls, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${pw}\", udp: true, sni: ${sni}, ${tls_verify}${uot}}" ;;
@@ -2492,51 +2849,20 @@ export_clash(){
       echo "geo-update-interval: 24"
       if [ -z "$proxies" ]; then
         echo "proxies: []"
-        echo "proxy-groups:"
-        echo "  - name: PROXY"
-        echo "    type: select"
-        echo "    proxies:"
-        echo "      - DIRECT"
-        echo "  - name: AUTO"
-        echo "    type: url-test"
-        echo "    url: \"https://www.gstatic.com/generate_204\""
-        echo "    interval: 300"
-        echo "    tolerance: 50"
-        echo "    proxies:"
-        echo "      - DIRECT"
+        clash_proxy_groups ""
         echo "rules:"
-        echo "  - MATCH,PROXY"
+        echo "  - MATCH,🐟 漏网之鱼"
       else
         echo "proxies:"
         echo "$proxies"
-        echo "proxy-groups:"
-        echo "  - name: PROXY"
-        echo "    type: select"
-        echo "    proxies:"
-        echo "      - AUTO"
-        echo "$names"
-        echo "  - name: AUTO"
-        echo "    type: url-test"
-        echo "    url: \"https://www.gstatic.com/generate_204\""
-        echo "    interval: 300"
-        echo "    tolerance: 50"
-        echo "    proxies:"
-        echo "$names"
-        echo "rules:"
-        echo "  - GEOIP,private,DIRECT,no-resolve"
-        echo "  - GEOSITE,category-ads-all,REJECT"
-        echo "  - GEOSITE,openai,PROXY"
-        echo "  - DOMAIN-SUFFIX,gemini.google.com,PROXY"
-        echo "  - DOMAIN-SUFFIX,aistudio.google.com,PROXY"
-        echo "  - DOMAIN-SUFFIX,generativelanguage.googleapis.com,PROXY"
-        echo "  - DOMAIN-SUFFIX,anthropic.com,PROXY"
-        echo "  - DOMAIN-SUFFIX,claude.ai,PROXY"
-        echo "  - GEOSITE,netflix,PROXY"
-        echo "  - GEOSITE,disney,PROXY"
-        echo "  - GEOSITE,telegram,PROXY"
-        echo "  - GEOSITE,cn,DIRECT"
-        echo "  - GEOIP,cn,DIRECT"
-        echo "  - MATCH,PROXY"
+        clash_proxy_groups "$names"
+        if [ "${CLASH_RULE_MODE:-full}" = "simple" ]; then
+          clash_rules_simple
+        else
+          clash_rule_providers
+          echo
+          clash_rules_full
+        fi
       fi
     } >"$SUBDIR/clash.yaml"
 
@@ -2785,6 +3111,9 @@ export_singbox_json(){
         pub="$(jq -r '.public_key // empty' <<<"$row")"; sid="$(jq -r '.short_id // empty' <<<"$row")"
         local _adv_ip _adv_port
         _adv_ip="$(advertise_ip)"; _adv_port="$(advertise_port "$port")"
+        local _argo_dom
+        _argo_dom="$(jq -r '.argo // empty' <<<"$row")"
+        [ -n "$_argo_dom" ] && { _adv_ip="$_argo_dom"; _adv_port=443; }
         ob=""
         case "$type" in
           vless-reality)
@@ -2796,6 +3125,11 @@ export_singbox_json(){
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg sn "$sni" --arg pa "$extra" \
               '{type:"vless",tag:$t,server:$s,server_port:$p,uuid:$u,
                 tls:{enabled:true,server_name:$sn,insecure:true},
+                transport:{type:"ws",path:$pa,headers:{Host:$sn}}}' 2>/dev/null)" ;;
+          vless-ws-argo)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg sn "$sni" --arg pa "$extra" \
+              '{type:"vless",tag:$t,server:$s,server_port:$p,uuid:$u,
+                tls:{enabled:true,server_name:$sn,insecure:false},
                 transport:{type:"ws",path:$pa,headers:{Host:$sn}}}' 2>/dev/null)" ;;
           trojan)
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" \
@@ -3961,6 +4295,7 @@ print_protocol_list(){
         printf ' %2d. %s\n' "$n" "$label"
         n=$((n+1))
     done
+    printf ' %2d. %s\n' "$n" "Argo 隧道（Cloudflare 内网穿透，无需公网端口）"
     printf '  0. %s\n' "返回"
 }
 protocol_name(){
@@ -3971,7 +4306,381 @@ protocol_name(){
 menu_id_to_raw(){
     local n="$1"
     [[ "$n" =~ ^[0-9]+$ ]] || { echo ""; return; }
+    if [ "$n" -eq "$(( ${#MENU_IDS[@]} + 1 ))" ]; then echo "99"; return; fi
     [ "$n" -ge 1 ] && [ "$n" -le "${#MENU_IDS[@]}" ] && echo "${MENU_IDS[$((n-1))]}" || echo ""
+}
+
+ARGO_BIN="${ARGO_BIN:-${BASE}/cloudflared}"
+ARGO_LOG="${BASE}/argo.log"
+ARGO_UNIT="sing-box-argo"
+ARGO_PROTO="${ARGO_PROTO:-http2}"
+
+argo_arch(){
+    case "$(uname -m)" in
+        x86_64|amd64)  echo amd64 ;;
+        aarch64|arm64) echo arm64 ;;
+        armv7l|armv7)  echo arm ;;
+        i386|i686)     echo 386 ;;
+        *)             echo "" ;;
+    esac
+}
+
+argo_ensure_binary(){
+    [ -x "$ARGO_BIN" ] && return 0
+    if command -v cloudflared >/dev/null 2>&1; then
+        ARGO_BIN="$(command -v cloudflared)"
+        info "使用系统已有的 cloudflared：$ARGO_BIN"
+        return 0
+    fi
+    local arch url y
+    arch="$(argo_arch)"
+    if [ -z "$arch" ]; then
+        warn "当前架构 $(uname -m) 没有对应的 cloudflared 官方包"
+        return 1
+    fi
+    url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
+    echo
+    warn "Argo 需要 Cloudflare 官方隧道客户端 cloudflared（约 20MB）。"
+    info "下载地址：$url"
+    info "安装位置：$ARGO_BIN（单个二进制，不碰系统包管理器）"
+    read -r -p "  现在下载？（y/N）： " y || y=""
+    case "$y" in y|Y) ;; *) info "已取消"; return 1 ;; esac
+    mkdir -p "$(dirname "$ARGO_BIN")"
+    if ! run_with_timeout 180 curl -fL --retry 2 -o "${ARGO_BIN}.tmp" "$url"; then
+        rm -f "${ARGO_BIN}.tmp"
+        warn "下载失败（GitHub 不可达或被限速）"
+        info "可手动下载 cloudflared-linux-${arch}，放到 $ARGO_BIN 后 chmod +x"
+        return 1
+    fi
+    chmod +x "${ARGO_BIN}.tmp" || { rm -f "${ARGO_BIN}.tmp"; return 1; }
+    mv "${ARGO_BIN}.tmp" "$ARGO_BIN" || { rm -f "${ARGO_BIN}.tmp"; return 1; }
+    if ! "$ARGO_BIN" --version >/dev/null 2>&1; then
+        warn "下载的文件无法运行（架构不匹配？）"
+        return 1
+    fi
+    ok "cloudflared 已就绪"
+}
+
+argo_unit_write(){
+    local mode="$1" port="$2" token="$3" exec_line
+    if [ "$mode" = "token" ]; then
+        exec_line="${ARGO_BIN} tunnel --no-autoupdate --protocol ${ARGO_PROTO} run --token ${token}"
+    else
+        exec_line="${ARGO_BIN} tunnel --no-autoupdate --protocol ${ARGO_PROTO} --url http://127.0.0.1:${port}"
+    fi
+    cat >"/etc/systemd/system/${ARGO_UNIT}.service" <<EOF
+[Unit]
+Description=Cloudflare Argo tunnel for sing-box NAT
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${exec_line}
+Restart=always
+RestartSec=5
+StandardOutput=append:${ARGO_LOG}
+StandardError=append:${ARGO_LOG}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 600 "/etc/systemd/system/${ARGO_UNIT}.service" 2>/dev/null
+    systemctl daemon-reload
+    systemctl enable "$ARGO_UNIT" >/dev/null 2>&1
+}
+
+argo_service_restart(){
+    systemctl restart "$ARGO_UNIT" 2>/dev/null || return 1
+    sleep 1
+    systemctl is-active --quiet "$ARGO_UNIT" 2>/dev/null
+}
+
+argo_domain_from_log(){
+    [ -f "$ARGO_LOG" ] || return 1
+    local d
+    d="$(grep -oE 'https://[A-Za-z0-9-]+\.trycloudflare\.com' "$ARGO_LOG" 2>/dev/null \
+         | tail -n1 | sed 's#^https://##')"
+    [ -n "$d" ] || return 1
+    printf '%s' "$d"
+}
+
+argo_wait_domain(){
+    local i d
+    for ((i = 0; i < 30; i++)); do
+        if d="$(argo_domain_from_log)"; then
+            printf '%s' "$d"; return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+argo_wait_connected(){
+    local i
+    for ((i = 0; i < 20; i++)); do
+        if grep -q 'Registered tunnel connection' "$ARGO_LOG" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+argo_create_node(){
+    local p="$1" domain="$2" u path obj
+    u="$(uuid)"
+    path="/$(rand_str 6)"
+    obj="$(jq -n --arg p "$p" --arg u "$u" --arg path "$path" '{
+      type:"vless",tag:"vless-ws-argo",listen:"127.0.0.1",listen_port:($p|tonumber),
+      users:[{uuid:$u}],
+      transport:{type:"ws",path:$path}
+    }')" || return 1
+    append_inbound "$obj" || return 1
+    add_node "Argo + VLESS + WS" "vless-ws-argo" tcp "$p" "$u" "" "$domain" "$path" "" "" "$domain" || return 1
+    printf '%s\n' "$p" >"${BASE}/argo.port" 2>/dev/null
+    return 0
+}
+
+argo_log_tail(){
+    [ -f "$ARGO_LOG" ] || return 0
+    local n
+    n="$(wc -l <"$ARGO_LOG" 2>/dev/null || echo 0)"
+    [ "${n:-0}" -gt 0 ] || return 0
+    echo "  ${DIM}--- cloudflared 日志末尾 ---${RESET}"
+    tail -n 8 "$ARGO_LOG" 2>/dev/null | sed 's/^/    /'
+    echo "  ${DIM}---------------------------${RESET}"
+}
+
+argo_deploy_temp(){
+    argo_ensure_binary || return 1
+    local p dom
+    p="$(rand_free_port tcp 4)" || { warn "端口段内没有空闲端口"; return 1; }
+    : >"$ARGO_LOG" 2>/dev/null
+    argo_unit_write temp "$p" "" || { warn "写入 systemd 单元失败"; return 1; }
+    if ! argo_service_restart; then
+        warn "cloudflared 启动失败"
+        argo_log_tail
+        systemctl disable --now "$ARGO_UNIT" >/dev/null 2>&1
+        return 1
+    fi
+    info "正在等待 Cloudflare 分配域名 ..."
+    if ! dom="$(argo_wait_domain)"; then
+        if [ "$ARGO_PROTO" = "http2" ]; then
+            warn "30 秒没拿到域名 —— 可能出站 TCP 443 被限制，改用 QUIC（UDP 7844）重试"
+            ARGO_PROTO="quic"; save_settings 2>/dev/null
+            : >"$ARGO_LOG" 2>/dev/null
+            if argo_unit_write temp "$p" "" && systemctl restart "$ARGO_UNIT" >/dev/null 2>&1; then
+                sleep 1
+                dom="$(argo_wait_domain)" || dom=""
+            fi
+        fi
+    fi
+    if [ -z "$dom" ]; then
+        warn "仍然没拿到临时域名（网络受限或被限速）"
+        argo_log_tail
+        systemctl disable --now "$ARGO_UNIT" >/dev/null 2>&1
+        return 1
+    fi
+    ok "临时域名：$dom"
+    if ! argo_create_node "$p" "$dom"; then
+        warn "节点写入失败，已停止 Argo 服务"
+        systemctl disable --now "$ARGO_UNIT" >/dev/null 2>&1
+        return 1
+    fi
+    return 0
+}
+
+argo_deploy_token(){
+    argo_ensure_binary || return 1
+    local token dom p go
+    echo
+    info "先在 Cloudflare Zero Trust → Networks → Tunnels 创建隧道，"
+    info "拿到隧道 Token；Public Hostname 的 Service 稍后指向本机端口。"
+    echo
+    read -r -p "  隧道 Token： " token || token=""
+    [ -n "$token" ] || { info "已取消"; return 1; }
+    read -r -p "  绑定的域名（如 argo.example.com）： " dom || dom=""
+    if ! [[ "$dom" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+        warn "域名格式不合法"; return 1
+    fi
+    p="$(rand_free_port tcp 4)" || { warn "端口段内没有空闲端口"; return 1; }
+    echo
+    warn "请到 CF 后台把 Public Hostname 的 Service 改成："
+    echo "    ${BOLD}http://localhost:${p}${RESET}"
+    read -r -p "  配置好后按回车继续（输入 0 取消）： " go || go=""
+    [ "$go" = "0" ] && { info "已取消"; return 1; }
+    : >"$ARGO_LOG" 2>/dev/null
+    argo_unit_write token "$p" "$token" || { warn "写入 systemd 单元失败"; return 1; }
+    if ! argo_service_restart; then
+        warn "cloudflared 启动失败（token 是否正确？）"
+        argo_log_tail
+        return 1
+    fi
+    info "正在等待隧道注册到 Cloudflare ..."
+    if ! argo_wait_connected; then
+        if [ "$ARGO_PROTO" = "http2" ]; then
+            warn "20 秒未注册成功 —— 可能出站 TCP 443 被限制，改用 QUIC（UDP 7844）重试"
+            ARGO_PROTO="quic"; save_settings 2>/dev/null
+            : >"$ARGO_LOG" 2>/dev/null
+            argo_unit_write token "$p" "$token"
+            systemctl restart "$ARGO_UNIT" >/dev/null 2>&1
+            sleep 1
+            if ! argo_wait_connected; then
+                warn "仍未能注册到 Cloudflare"
+                argo_log_tail
+                return 1
+            fi
+        else
+            warn "未能注册到 Cloudflare（token 是否正确？域名是否已绑定？）"
+            argo_log_tail
+            return 1
+        fi
+    fi
+    ok "隧道已连接 Cloudflare"
+    if ! argo_create_node "$p" "$dom"; then
+        warn "节点写入失败"
+        return 1
+    fi
+    return 0
+}
+
+argo_refresh_temp_domain(){
+    local idx dom
+    idx="$(jq -r 'to_entries[] | select((.value.argo // "") | test("trycloudflare\\.com$")) | .key' "$NODES" 2>/dev/null | head -n1)"
+    if [ -z "$idx" ]; then
+        warn "没有找到临时隧道节点（Token 隧道域名固定，不需要换）"
+        return 1
+    fi
+    : >"$ARGO_LOG" 2>/dev/null
+    if ! systemctl restart "$ARGO_UNIT" >/dev/null 2>&1; then
+        warn "重启 Argo 服务失败"; return 1
+    fi
+    info "正在等待新域名 ..."
+    if ! dom="$(argo_wait_domain)"; then
+        warn "没拿到新域名"
+        argo_log_tail
+        return 1
+    fi
+    jq --arg d "$dom" --argjson i "$idx" \
+       '.[$i].argo = $d | .[$i].sni = $d' "$NODES" >"$NODES.tmp" 2>/dev/null \
+       || { rm -f "$NODES.tmp"; warn "更新节点记录失败"; return 1; }
+    [ -s "$NODES.tmp" ] || { rm -f "$NODES.tmp"; warn "更新节点记录失败"; return 1; }
+    mv "$NODES.tmp" "$NODES" 2>/dev/null || { rm -f "$NODES.tmp"; return 1; }
+    ok "新域名：$dom"
+    return 0
+}
+
+argo_menu(){
+  while :; do
+    clear
+    panel "Argo 隧道（Cloudflare 内网穿透）"
+    local _cnt
+    _cnt="$(jq '[.[] | select((.argo // "") != "")] | length' "$NODES" 2>/dev/null || echo 0)"
+    kv "Argo 节点" "${_cnt} 个"
+    if [ -x "$ARGO_BIN" ] || command -v cloudflared >/dev/null 2>&1; then
+        kv "cloudflared" "${GREEN}已安装${RESET}"
+    else
+        kv "cloudflared" "${DIM}未安装（首次使用会问你要不要下载）${RESET}"
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl is-active --quiet "$ARGO_UNIT" 2>/dev/null; then
+            kv "隧道服务" "${GREEN}运行中${RESET}"
+        else
+            kv "隧道服务" "${DIM}未运行${RESET}"
+        fi
+    else
+        kv "隧道服务" "${YELLOW}本机没有 systemd，Argo 不可用${RESET}"
+    fi
+    if [ "$ARGO_PROTO" = "quic" ]; then
+        kv "传输协议" "quic  ${DIM}（出站 UDP 7844）${RESET}"
+    else
+        kv "传输协议" "http2  ${DIM}（出站 TCP 443）${RESET}"
+    fi
+    hr
+    info "什么时候用：VPS 是 NAT / 共享 IP / 端口被服务商封了，"
+    info "节点部署好了、面板也正常，客户端就是连不上。"
+    echo
+    info "流量会绕道 Cloudflare：客户端连 CF 的 443，CF 通过隧道转回本机。"
+    info "本机不用开放任何端口，也不需要域名和证书。"
+    hr
+    echo "  1. 临时隧道（免域名，CF 随机分配，重启后域名会变）"
+    echo "  2. Token 隧道（固定域名，需先在 CF 后台建隧道）"
+    echo "  3. 换临时隧道域名（重启后节点连不上了用这个）"
+    echo "  4. 停止 / 移除 Argo 服务（节点记录保留）"
+    echo "  5. 切换传输协议（http2 ↔ quic，出站 443 被限时用 quic）"
+    echo "  0. 返回"
+    read -r -p "请选择： " a || a=""
+    case "$a" in
+      1)
+        if ! command -v systemctl >/dev/null 2>&1; then
+            warn "本机没有 systemd，无法常驻 cloudflared"; pause; continue
+        fi
+        backup
+        if argo_deploy_temp; then
+            info "正在检查配置 ..."
+            if validate >/dev/null 2>&1 && apply >/dev/null 2>&1; then
+                export_all
+                ok "Argo 节点已就绪"
+                info "客户端请重新拉一次订阅（或重新导入 Clash 配置）"
+            else
+                warn "sing-box 配置未通过检查，已回滚"
+                rollback
+                apply >/dev/null 2>&1 || warn "回滚后服务仍未能启动，请手动检查"
+            fi
+        fi
+        pause ;;
+      2)
+        if ! command -v systemctl >/dev/null 2>&1; then
+            warn "本机没有 systemd，无法常驻 cloudflared"; pause; continue
+        fi
+        backup
+        if argo_deploy_token; then
+            info "正在检查配置 ..."
+            if validate >/dev/null 2>&1 && apply >/dev/null 2>&1; then
+                export_all
+                ok "Argo 节点已就绪"
+                info "客户端请重新拉一次订阅（或重新导入 Clash 配置）"
+            else
+                warn "sing-box 配置未通过检查，已回滚"
+                rollback
+                apply >/dev/null 2>&1 || warn "回滚后服务仍未能启动，请手动检查"
+            fi
+        fi
+        pause ;;
+      3)
+        if argo_refresh_temp_domain; then
+            export_all
+            info "订阅已重新生成 —— 客户端重新拉一次即可"
+        fi
+        pause ;;
+      4)
+        systemctl disable --now "$ARGO_UNIT" >/dev/null 2>&1
+        rm -f "/etc/systemd/system/${ARGO_UNIT}.service"
+        systemctl daemon-reload >/dev/null 2>&1
+        ok "Argo 服务已停止并移除"
+        info "节点记录还在（订阅里仍有这些节点），要删请到「节点管理」"
+        pause ;;
+      5)
+        if [ "$ARGO_PROTO" = "http2" ]; then ARGO_PROTO=quic; else ARGO_PROTO=http2; fi
+        save_settings
+        ok "传输协议已切换为：$ARGO_PROTO"
+        if [ "$ARGO_PROTO" = "quic" ]; then
+            info "出站走 UDP 7844 —— 适合出站 TCP 443 被封 / 被限速的机器"
+        else
+            info "出站走 TCP 443 —— 最通用，默认"
+        fi
+        if jq -e 'any(.[]; ((.argo // "") | test("trycloudflare\\.com$")))' "$NODES" >/dev/null 2>&1; then
+            info "正在重启临时隧道以应用新协议 ..."
+            argo_refresh_temp_domain && export_all
+        else
+            info "下次部署 Argo 时生效（Token 隧道请重新执行第 2 项）"
+        fi
+        pause ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
 }
 
 node_menu(){
@@ -3987,6 +4696,7 @@ node_menu(){
     [ "$menu_no" = "0" ] && return
     c="$(menu_id_to_raw "$menu_no")"
     [ -n "$c" ] || { warn "无效选项"; sleep 1; continue; }
+    if [ "$c" = "99" ]; then argo_menu; continue; fi
     backup
     local _drc=0
     case "$c" in
@@ -4285,6 +4995,10 @@ client_menu(){
         pcs)      kv "证书放行" "${CYAN}指纹钉死 (pcs)${RESET}  ${DIM}（最安全，小火箭需手动开）${RESET}" ;;
         insecure) kv "证书放行" "${YELLOW}统一跳过校验${RESET}  ${DIM}（最省事，v2rayN 请改用指纹）${RESET}" ;;
     esac
+    case "${CLASH_RULE_MODE:-full}" in
+        full)   kv "Clash 分流" "${GREEN}完整${RESET}  ${DIM}（七组 + 远程规则集）${RESET}" ;;
+        simple) kv "Clash 分流" "${CYAN}精简${RESET}  ${DIM}（仅内置 GEOSITE/GEOIP）${RESET}" ;;
+    esac
     if advertise_active; then
         kv "客户端地址" "$(adv_ip_display)" "$CYAN"
         if [ -n "${SERVER_IP:-}" ] && [ "$(advertise_ip)" != "$SERVER_IP" ]; then
@@ -4300,6 +5014,7 @@ client_menu(){
     echo "  4. 手动指定默认 SNI 域名"
     echo "  5. 节点命名（默认 国家/地区 + 协议类型，可自定义前缀）"
     echo "  6. 证书放行策略（自签证书要不要跳过校验）"
+    echo "  7. Clash 分流规则（七组分流 / 精简模式）"
     echo "  0. 返回"
     echo
     info "要找「入站 IP / 端口映射」？已移到主菜单第 6 项。"
@@ -4430,6 +5145,7 @@ client_menu(){
         esac
         pause ;;
       6) cert_insecure_menu ;;
+      7) clash_rule_mode_menu ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
@@ -4480,6 +5196,45 @@ cert_insecure_menu(){
     pause
   done
 }
+clash_rule_mode_menu(){
+  while :; do
+    clear
+    panel "Clash 分流规则"
+    case "${CLASH_RULE_MODE:-full}" in
+        full)   kv "当前模式" "${GREEN}完整分流${RESET}  ${DIM}（七组 + 远程规则集）${RESET}" ;;
+        simple) kv "当前模式" "${CYAN}精简分流${RESET}  ${DIM}（只用内核内置 GEOSITE/GEOIP）${RESET}" ;;
+    esac
+    hr
+    info "只影响 Clash / mihomo 订阅（clash.yaml）—— 其它订阅和节点本身不受影响。"
+    echo
+    echo "  ${BOLD}完整分流${RESET}（推荐，默认）"
+    echo "    · 七组：节点选择 / 全球直连 / 全球拦截 / 国外媒体 /"
+    echo "            国内媒体 / 电报信息 / 漏网之鱼"
+    echo "    · 逐服务分流：ChatGPT、Claude、GitHub、Netflix、YouTube、"
+    echo "                  Disney+、TikTok、Telegram、Steam、广告拦截…"
+    echo "    · 规则集走 jsDelivr，首次导入需下载约 30 个小文件（几秒钟）"
+    echo
+    echo "  ${BOLD}精简分流${RESET}"
+    echo "    · 只按 GEOSITE / GEOIP 粗分，不下载任何东西，导入秒开"
+    echo "    · 适合：客户端网络连不上 CDN / 只想先能用 / 内核较老"
+    echo
+    echo "  1. 完整分流（推荐）"
+    echo "  2. 精简分流"
+    echo "  0. 返回"
+    read -r -p "请选择： " cm || cm=""
+    case "$cm" in
+      1) CLASH_RULE_MODE=full ;;
+      2) CLASH_RULE_MODE=simple ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1; continue ;;
+    esac
+    save_settings; export_all 2>/dev/null
+    ok "Clash 分流模式已设为：${CLASH_RULE_MODE}"
+    info "客户端请重新拉一次订阅（或重新导入 clash.yaml）后生效"
+    pause
+  done
+}
+
 port_menu(){
   while :; do
     clear
