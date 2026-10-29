@@ -2,9 +2,9 @@
 
 一个 Bash 单文件脚本，在 Linux 服务器上部署和管理 sing-box 的 **16 种代理协议**，带菜单界面、节点管理和**订阅服务**——让 v2rayN / Clash(mihomo) / sing-box / 小火箭 等客户端通过**一个订阅链接**导入全部节点。
 
-**V3.9.10**
+**V3.9.11**
 
-> **本次更新**：**cloudflared 能卸干净了**——卸载时如果发现系统路径下还有 cloudflared，会问你要不要一并卸载；包管理器装的就走包管理器卸包，手动下的就删文件。另外 Argo 状态行会显示内存 / CPU。此前版本已有：Argo 提升主菜单第 12 项、Clash 配置可直接下载、修复 fork bomb、OpenRC 支持。详见文末「更新日志」。
+> **本次更新**：**SNI 优选的测速站全换成国外的**——原来 4 个国内测速站全部移除，换成 `speed.cloudflare.com` / `www.speedtest.net` / `www.ookla.com` / `testmy.net`（都是国外站点、大陆可直连、走全球 CDN）。此前版本已有：cloudflared 能卸干净、Argo 状态行显示内存 CPU、Argo 提升主菜单第 12 项、Clash 配置可直接下载、修复 fork bomb、OpenRC 支持。详见文末「更新日志」。
 
 ---
 
@@ -371,7 +371,15 @@ BusyBox 的 `date` 不支持 `%N`。已改用三级回退，`sb update` 升级�
 
 ## 更新日志
 
-### V3.9.10（当前版本）
+### V3.9.11（当前版本）
+- **SNI 优选里的测速站全换成国外的**：原来那 4 个国内测速站（`m.speedtest.cn` / `test.nju.edu.cn` / `test.ustc.edu.cn` / `www.speedtest.cn`）全部移除，换成**国外 + 大陆可直连**的 4 个
+  - `speed.cloudflare.com`（约 0.29s）、`www.speedtest.net`（约 0.46s）、`www.ookla.com`（约 0.68s）、`testmy.net`（约 0.78s）
+  - 为什么要换：客户端在国内、VPS 在海外，SNI 指向国外站点才和「访问国外网站」的流量特征一致；指向国内站点反而让握手目标和实际出口对不上，更可疑
+  - 四个都落在 Cloudflare / Fastly 这类全球 CDN 上，国内可直连；**没有单机托管的小站**（`librespeed.org` 在德国 Hetzner 单机，国内慢，没加）
+  - `fast.com` 是 Netflix 的，国内打不开；`speedof.me` 连 TLS 握手都失败 —— 都没加
+  - 除 `speed.cloudflare.com` 外都支持 h2（ALPN 实测）；做 Reality 且在意 h2 指纹就避开它
+
+### V3.9.10
 - **cloudflared 现在真的能卸干净了**：系统路径下那份不再「只停服务、留着程序」，改成**问你要不要一并卸载**（默认 N）
   - 包管理器装的 → 走包管理器卸包，安装记录一起清（`apt purge` / `apk del` / `dnf remove` / `pacman -R` / `zypper remove`）
   - 手动下载的散装文件 → 直接删二进制 + 清软链
@@ -406,6 +414,7 @@ BusyBox 的 `date` 不支持 `%N`。已改用三级回退，`sb update` 升级�
 - **SNI 优选候选加入中国大陆测速站**：`m.speedtest.cn`（约 0.17s，最快）、`test.nju.edu.cn`（约 0.34s）、`test.ustc.edu.cn`（约 0.66s）、`www.speedtest.cn`（约 1.90s）
   - 实测了 17 个大陆测速域名，只有这 4 个握手成功；浙大 / 上交 / 清华 / 北大 / 华科 / 腾讯 / 阿里等 13 个都连不上，**没有加进去**（加了只会让优选变慢）
   - 裸域 `speedtest.cn` 没开 TLS，不能用作 SNI
+  - ⚠️ **这一组已在 V3.9.11 全部移除**，换成国外可直连的测速站（见 V3.9.11）
 
 ### V3.9.5
 - **Argo 传输协议可选**（菜单第 5 项）：`http2`（出站 TCP 443，默认）/ `quic`（出站 UDP 7844）

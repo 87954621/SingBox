@@ -78,7 +78,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.10"
+VERSION="V3.9.11"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -977,10 +977,10 @@ SNI_CANDIDATES=(
     "www.bing.com"
     "www.cloudflare.com"
     "time.is"
-    "m.speedtest.cn"
-    "test.nju.edu.cn"
-    "test.ustc.edu.cn"
-    "www.speedtest.cn"
+    "speed.cloudflare.com"
+    "www.speedtest.net"
+    "www.ookla.com"
+    "testmy.net"
 )
 SNI_TESTED_FILE="$BASE/sni_tested"
 pick_sni_cached(){
