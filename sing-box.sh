@@ -78,7 +78,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.5"
+VERSION="V3.9.6"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -976,6 +976,10 @@ SNI_CANDIDATES=(
     "www.bing.com"
     "www.cloudflare.com"
     "time.is"
+    "m.speedtest.cn"
+    "test.nju.edu.cn"
+    "test.ustc.edu.cn"
+    "www.speedtest.cn"
 )
 SNI_TESTED_FILE="$BASE/sni_tested"
 pick_sni_cached(){
@@ -4361,14 +4365,29 @@ argo_ensure_binary(){
     ok "cloudflared 已就绪"
 }
 
-argo_unit_write(){
+argo_write_runner(){
     local mode="$1" port="$2" token="$3" exec_line
     if [ "$mode" = "token" ]; then
         exec_line="${ARGO_BIN} tunnel --no-autoupdate --protocol ${ARGO_PROTO} run --token ${token}"
     else
         exec_line="${ARGO_BIN} tunnel --no-autoupdate --protocol ${ARGO_PROTO} --url http://127.0.0.1:${port}"
     fi
-    cat >"/etc/systemd/system/${ARGO_UNIT}.service" <<EOF
+    cat >"${BASE}/argo-run.sh" <<EOF
+#!/bin/sh
+# 由 sing-box NAT 生成，请勿手改。
+# 作用：把 cloudflared 的输出统一写进日志（临时隧道要靠它抓域名）。
+exec ${exec_line} >>"${ARGO_LOG}" 2>&1
+EOF
+    chmod 700 "${BASE}/argo-run.sh" 2>/dev/null
+    return 0
+}
+
+argo_svc_install(){
+    argo_write_runner "$@" || return 1
+    local runner="${BASE}/argo-run.sh"
+    case "${INIT:-none}" in
+      systemd)
+        cat >"/etc/systemd/system/${ARGO_UNIT}.service" <<EOF
 [Unit]
 Description=Cloudflare Argo tunnel for sing-box NAT
 After=network-online.target
@@ -4376,24 +4395,93 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${exec_line}
+ExecStart=${runner}
 Restart=always
 RestartSec=5
-StandardOutput=append:${ARGO_LOG}
-StandardError=append:${ARGO_LOG}
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    chmod 600 "/etc/systemd/system/${ARGO_UNIT}.service" 2>/dev/null
-    systemctl daemon-reload
-    systemctl enable "$ARGO_UNIT" >/dev/null 2>&1
+        chmod 600 "/etc/systemd/system/${ARGO_UNIT}.service" 2>/dev/null
+        systemctl daemon-reload
+        systemctl enable "$ARGO_UNIT" >/dev/null 2>&1
+        ;;
+      openrc)
+        cat >"/etc/init.d/${ARGO_UNIT}" <<EOF
+#!/sbin/openrc-run
+description="Cloudflare Argo tunnel for sing-box NAT"
+command="${runner}"
+command_background="yes"
+pidfile="/run/${ARGO_UNIT}.pid"
+depend() { need net; }
+EOF
+        chmod +x "/etc/init.d/${ARGO_UNIT}"
+        rc-update add "$ARGO_UNIT" default >/dev/null 2>&1
+        ;;
+      *)
+        return 0
+        ;;
+    esac
+    return 0
 }
 
-argo_service_restart(){
-    systemctl restart "$ARGO_UNIT" 2>/dev/null || return 1
+argo_svc_restart(){
+    case "${INIT:-none}" in
+      systemd)
+        systemctl reset-failed "$ARGO_UNIT" >/dev/null 2>&1
+        systemctl restart "$ARGO_UNIT" >/dev/null 2>&1 || return 1
+        ;;
+      openrc)
+        rc-service "$ARGO_UNIT" restart >/dev/null 2>&1 || return 1
+        ;;
+      *)
+        argo_svc_stop >/dev/null 2>&1
+        if command -v setsid >/dev/null 2>&1; then
+            setsid "${BASE}/argo-run.sh" >/dev/null 2>&1 &
+        else
+            nohup "${BASE}/argo-run.sh" >/dev/null 2>&1 &
+        fi
+        echo $! >"/run/${ARGO_UNIT}.pid" 2>/dev/null || true
+        ;;
+    esac
     sleep 1
-    systemctl is-active --quiet "$ARGO_UNIT" 2>/dev/null
+    argo_svc_running
+}
+
+argo_svc_running(){
+    case "${INIT:-none}" in
+      systemd) systemctl is-active --quiet "$ARGO_UNIT" 2>/dev/null ;;
+      openrc)  rc-service "$ARGO_UNIT" status >/dev/null 2>&1 ;;
+      *)
+        local pid
+        pid="$(cat "/run/${ARGO_UNIT}.pid" 2>/dev/null || echo "")"
+        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+        ;;
+    esac
+}
+
+argo_svc_stop(){
+    case "${INIT:-none}" in
+      systemd) argo_svc_stop >/dev/null 2>&1 ;;
+      openrc)
+        rc-service "$ARGO_UNIT" stop >/dev/null 2>&1
+        rc-update del "$ARGO_UNIT" default >/dev/null 2>&1
+        ;;
+      *)
+        local pid
+        pid="$(cat "/run/${ARGO_UNIT}.pid" 2>/dev/null || echo "")"
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null
+        rm -f "/run/${ARGO_UNIT}.pid" 2>/dev/null
+        ;;
+    esac
+    return 0
+}
+
+argo_svc_remove(){
+    argo_svc_stop
+    rm -f "/etc/systemd/system/${ARGO_UNIT}.service" "/etc/init.d/${ARGO_UNIT}" 2>/dev/null
+    if [ "${INIT:-none}" = systemd ]; then systemctl daemon-reload >/dev/null 2>&1; fi
+    return 0
 }
 
 argo_domain_from_log(){
@@ -4457,11 +4545,11 @@ argo_deploy_temp(){
     local p dom
     p="$(rand_free_port tcp 4)" || { warn "端口段内没有空闲端口"; return 1; }
     : >"$ARGO_LOG" 2>/dev/null
-    argo_unit_write temp "$p" "" || { warn "写入 systemd 单元失败"; return 1; }
-    if ! argo_service_restart; then
+    argo_svc_install temp "$p" "" || { warn "写入服务配置失败"; return 1; }
+    if ! argo_svc_restart; then
         warn "cloudflared 启动失败"
         argo_log_tail
-        systemctl disable --now "$ARGO_UNIT" >/dev/null 2>&1
+        argo_svc_stop >/dev/null 2>&1
         return 1
     fi
     info "正在等待 Cloudflare 分配域名 ..."
@@ -4470,7 +4558,7 @@ argo_deploy_temp(){
             warn "30 秒没拿到域名 —— 可能出站 TCP 443 被限制，改用 QUIC（UDP 7844）重试"
             ARGO_PROTO="quic"; save_settings 2>/dev/null
             : >"$ARGO_LOG" 2>/dev/null
-            if argo_unit_write temp "$p" "" && systemctl restart "$ARGO_UNIT" >/dev/null 2>&1; then
+            if argo_svc_install temp "$p" "" && argo_svc_restart >/dev/null 2>&1; then
                 sleep 1
                 dom="$(argo_wait_domain)" || dom=""
             fi
@@ -4479,13 +4567,13 @@ argo_deploy_temp(){
     if [ -z "$dom" ]; then
         warn "仍然没拿到临时域名（网络受限或被限速）"
         argo_log_tail
-        systemctl disable --now "$ARGO_UNIT" >/dev/null 2>&1
+        argo_svc_stop >/dev/null 2>&1
         return 1
     fi
     ok "临时域名：$dom"
     if ! argo_create_node "$p" "$dom"; then
         warn "节点写入失败，已停止 Argo 服务"
-        systemctl disable --now "$ARGO_UNIT" >/dev/null 2>&1
+        argo_svc_stop >/dev/null 2>&1
         return 1
     fi
     return 0
@@ -4511,8 +4599,8 @@ argo_deploy_token(){
     read -r -p "  配置好后按回车继续（输入 0 取消）： " go || go=""
     [ "$go" = "0" ] && { info "已取消"; return 1; }
     : >"$ARGO_LOG" 2>/dev/null
-    argo_unit_write token "$p" "$token" || { warn "写入 systemd 单元失败"; return 1; }
-    if ! argo_service_restart; then
+    argo_svc_install token "$p" "$token" || { warn "写入服务配置失败"; return 1; }
+    if ! argo_svc_restart; then
         warn "cloudflared 启动失败（token 是否正确？）"
         argo_log_tail
         return 1
@@ -4523,8 +4611,8 @@ argo_deploy_token(){
             warn "20 秒未注册成功 —— 可能出站 TCP 443 被限制，改用 QUIC（UDP 7844）重试"
             ARGO_PROTO="quic"; save_settings 2>/dev/null
             : >"$ARGO_LOG" 2>/dev/null
-            argo_unit_write token "$p" "$token"
-            systemctl restart "$ARGO_UNIT" >/dev/null 2>&1
+            argo_svc_install token "$p" "$token"
+            argo_svc_restart >/dev/null 2>&1
             sleep 1
             if ! argo_wait_connected; then
                 warn "仍未能注册到 Cloudflare"
@@ -4553,7 +4641,7 @@ argo_refresh_temp_domain(){
         return 1
     fi
     : >"$ARGO_LOG" 2>/dev/null
-    if ! systemctl restart "$ARGO_UNIT" >/dev/null 2>&1; then
+    if ! argo_svc_restart >/dev/null 2>&1; then
         warn "重启 Argo 服务失败"; return 1
     fi
     info "正在等待新域名 ..."
@@ -4583,15 +4671,16 @@ argo_menu(){
     else
         kv "cloudflared" "${DIM}未安装（首次使用会问你要不要下载）${RESET}"
     fi
-    if command -v systemctl >/dev/null 2>&1; then
-        if systemctl is-active --quiet "$ARGO_UNIT" 2>/dev/null; then
-            kv "隧道服务" "${GREEN}运行中${RESET}"
-        else
-            kv "隧道服务" "${DIM}未运行${RESET}"
-        fi
+    if argo_svc_running 2>/dev/null; then
+        kv "隧道服务" "${GREEN}运行中${RESET}"
     else
-        kv "隧道服务" "${YELLOW}本机没有 systemd，Argo 不可用${RESET}"
+        kv "隧道服务" "${DIM}未运行${RESET}"
     fi
+    case "${INIT:-none}" in
+        systemd) kv "服务托管" "systemd" ;;
+        openrc)  kv "服务托管" "OpenRC（Alpine）" ;;
+        *)       kv "服务托管" "${YELLOW}无 init：只能手动后台运行，重启机器后需重来${RESET}" ;;
+    esac
     if [ "$ARGO_PROTO" = "quic" ]; then
         kv "传输协议" "quic  ${DIM}（出站 UDP 7844）${RESET}"
     else
@@ -4613,8 +4702,9 @@ argo_menu(){
     read -r -p "请选择： " a || a=""
     case "$a" in
       1)
-        if ! command -v systemctl >/dev/null 2>&1; then
-            warn "本机没有 systemd，无法常驻 cloudflared"; pause; continue
+        if [ "${INIT:-none}" = "none" ]; then
+            warn "本机没有 systemd / OpenRC，cloudflared 只能后台运行"
+            info "重启机器后需要重新启动 Argo（菜单第 3 项）"
         fi
         backup
         if argo_deploy_temp; then
@@ -4631,8 +4721,9 @@ argo_menu(){
         fi
         pause ;;
       2)
-        if ! command -v systemctl >/dev/null 2>&1; then
-            warn "本机没有 systemd，无法常驻 cloudflared"; pause; continue
+        if [ "${INIT:-none}" = "none" ]; then
+            warn "本机没有 systemd / OpenRC，cloudflared 只能后台运行"
+            info "重启机器后需要重新启动 Argo（菜单第 3 项）"
         fi
         backup
         if argo_deploy_token; then
@@ -4655,7 +4746,7 @@ argo_menu(){
         fi
         pause ;;
       4)
-        systemctl disable --now "$ARGO_UNIT" >/dev/null 2>&1
+        argo_svc_stop >/dev/null 2>&1
         rm -f "/etc/systemd/system/${ARGO_UNIT}.service"
         systemctl daemon-reload >/dev/null 2>&1
         ok "Argo 服务已停止并移除"
@@ -6040,6 +6131,8 @@ uninstall(){
         rm -f /etc/init.d/sing-box
     fi
     pkill -f "$BIN run -c $CONF" 2>/dev/null || true
+
+    argo_svc_remove >/dev/null 2>&1 || true
 
     progress 30 "清理订阅服务残留"
     rm -f "$NGINX_CONF" "$NGINX_CONF_LEGACY" 2>/dev/null || true
