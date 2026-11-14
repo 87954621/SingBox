@@ -78,7 +78,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.11"
+VERSION="V3.9.14"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -779,10 +779,10 @@ load_settings(){
     port_in_range "$DEFAULT_TCP_START" tcp || DEFAULT_TCP_START="$MIN_TCP"
     port_in_range "$DEFAULT_UDP_START" udp || DEFAULT_UDP_START="$MIN_UDP"
     FINGERPRINT="${FINGERPRINT:-chrome}"
-    LINK_CERT_INSECURE="$(printf '%s' "${LINK_CERT_INSECURE:-auto}" | tr 'A-Z' 'a-z')"
+    LINK_CERT_INSECURE="$(printf '%s' "${LINK_CERT_INSECURE:-insecure}" | tr 'A-Z' 'a-z')"
     case "$LINK_CERT_INSECURE" in
         auto|pcs|insecure) : ;;
-        *) LINK_CERT_INSECURE="auto" ;;
+        *) LINK_CERT_INSECURE="insecure" ;;
     esac
     UOT_ENABLED="${UOT_ENABLED:-0}"
     CLASH_RULE_MODE="$(printf '%s' "${CLASH_RULE_MODE:-full}" | tr 'A-Z' 'a-z')"
@@ -1005,14 +1005,14 @@ sni_optimize(){
     echo
     command -v curl >/dev/null 2>&1 || { warn "缺少 curl，无法测速"; return 1; }
     local d ms best="" bestms=99999 line
-    local results=""
-    local fail_streak=0
+    local results="" okcnt=0
+    local fail_streak=0 _early=0 _early_why=""
     local _t0="$SECONDS" _budget_stop=0
     for d in "${SNI_CANDIDATES[@]}"; do
         if [ $(( SECONDS - _t0 )) -ge 30 ]; then
             echo
             warn "测速已进行 30 秒仍未测完，提前结束（本机到候选域名的网络可能异常）"
-            _budget_stop=1
+            _budget_stop=1; _early=1; _early_why="测速达到 30 秒上限"
             break
         fi
         printf '  %-26s' "$d"
@@ -1021,24 +1021,29 @@ sni_optimize(){
         if [ "$ms" -ge 9999 ]; then
             printf '%s超时 / 不可达%s\n' "$DIM" "$RESET"
             fail_streak=$((fail_streak + 1))
-            if [ "$fail_streak" -ge 3 ]; then
+            if [ "$fail_streak" -ge 5 ]; then
                 echo
-                warn "已连续 $fail_streak 个域名不可达，判定为本机 DNS 或出网异常，停止测速"
-                echo "  排查建议：cat /etc/resolv.conf 看 DNS 是否可用；"
-                echo "            ping -c2 1.1.1.1 看是否连外网都不通。"
-                return 1
+                warn "已连续 $fail_streak 个域名不可达，提前结束本轮测速"
+                _early=1; _early_why="连续 ${fail_streak} 个候选不可达"
+                break
             fi
         else
             printf '%s%4d ms%s\n' "$GREEN" "$ms" "$RESET"
             fail_streak=0
+            okcnt=$((okcnt + 1))
             results="${results}${ms} ${d}
 "
             if [ "$ms" -lt "$bestms" ]; then bestms="$ms"; best="$d"; fi
         fi
     done
+    if [ "$_early" = 1 ] && [ -n "$best" ]; then
+        echo
+        info "已用 ${okcnt} 个有效样本择优（${_early_why}，其余候选本轮跳过）"
+        echo "  若怀疑本机 DNS / 出网异常：cat /etc/resolv.conf、ping -c2 1.1.1.1"
+    fi
     if [ -z "$best" ]; then
-        if [ "$_budget_stop" = "1" ]; then
-            warn "本次没测出可用结果，沿用现有默认 SNI"
+        if [ "$_early" = "1" ]; then
+            warn "本轮没测出可用结果（${_early_why}），沿用现有默认 SNI"
         else
             warn "全部候选域名均不可达（本机可能无法直连 443，或 DNS 异常）"
         fi
@@ -2234,8 +2239,8 @@ link_for_node(){
     local pcs_q="" _ai=0
     local _pcs=""
     local _allow_ins="${LINK_ALLOW_INSECURE:-0}"
-    [ "${LINK_CERT_INSECURE:-auto}" = "insecure" ] && _allow_ins=1
-    if [ "${LINK_CERT_INSECURE:-auto}" = "pcs" ]; then _allow_ins=0; fi
+    [ "${LINK_CERT_INSECURE:-insecure}" = "insecure" ] && _allow_ins=1
+    if [ "${LINK_CERT_INSECURE:-insecure}" = "pcs" ]; then _allow_ins=0; fi
     if [ "$_allow_ins" = "1" ]; then
         pcs_q="&allowInsecure=1&insecure=1"
         _ai=1
@@ -2460,6 +2465,9 @@ proxy-groups:
     type: select
     proxies:
       - "♻️ 自动选择"
+      - "🤖 AI 服务"
+      - "🌍 国外媒体"
+      - "🎯 全球直连"
 YAML
     printf '%s\n' "$nl"
     cat <<'YAML'
@@ -2472,16 +2480,12 @@ YAML
 YAML
     printf '%s\n' "$nl"
     cat <<'YAML'
-  - name: "🎯 全球直连"
+  - name: "🤖 AI 服务"
     type: select
     proxies:
-      - DIRECT
       - "🔰 节点选择"
-  - name: "🛑 全球拦截"
-    type: select
-    proxies:
-      - REJECT
-      - DIRECT
+      - "♻️ 自动选择"
+      - "🎯 全球直连"
   - name: "🌍 国外媒体"
     type: select
     proxies:
@@ -2493,15 +2497,53 @@ YAML
     proxies:
       - "🎯 全球直连"
       - "🔰 节点选择"
+  - name: "📱 社交媒体"
+    type: select
+    proxies:
+      - "🔰 节点选择"
+      - "♻️ 自动选择"
+      - "🎯 全球直连"
+  - name: "🎮 游戏平台"
+    type: select
+    proxies:
+      - "🔰 节点选择"
+      - "♻️ 自动选择"
+      - "🎯 全球直连"
   - name: "📲 电报信息"
     type: select
     proxies:
       - "🔰 节点选择"
       - "🎯 全球直连"
+  - name: "🍎 苹果服务"
+    type: select
+    proxies:
+      - "🎯 全球直连"
+      - "🔰 节点选择"
+  - name: "Ⓜ️ 微软服务"
+    type: select
+    proxies:
+      - "🎯 全球直连"
+      - "🔰 节点选择"
+  - name: "🛒 支付购物"
+    type: select
+    proxies:
+      - "🔰 节点选择"
+      - "🎯 全球直连"
+  - name: "🎯 全球直连"
+    type: select
+    proxies:
+      - DIRECT
+      - "🔰 节点选择"
+  - name: "🛑 全球拦截"
+    type: select
+    proxies:
+      - REJECT
+      - DIRECT
   - name: "🐟 漏网之鱼"
     type: select
     proxies:
       - "🔰 节点选择"
+      - "♻️ 自动选择"
       - "🎯 全球直连"
       - DIRECT
 YAML
@@ -2523,19 +2565,97 @@ rule-providers:
     url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Claude/Claude.yaml"
     path: ./ruleset/Claude.yaml
     interval: 86400
-  # ===== 开发 =====
+  Gemini:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Gemini/Gemini.yaml"
+    path: ./ruleset/Gemini.yaml
+    interval: 86400
+  Copilot:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Copilot/Copilot.yaml"
+    path: ./ruleset/Copilot.yaml
+    interval: 86400
+  Anthropic:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Anthropic/Anthropic.yaml"
+    path: ./ruleset/Anthropic.yaml
+    interval: 86400
+  BardAI:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/BardAI/BardAI.yaml"
+    path: ./ruleset/BardAI.yaml
+    interval: 86400
+  # ===== 开发 / 工具 =====
   GitHub:
     type: http
     behavior: classical
     url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/GitHub/GitHub.yaml"
     path: ./ruleset/GitHub.yaml
     interval: 86400
-  # ===== 流媒体 =====
+  GitLab:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/GitLab/GitLab.yaml"
+    path: ./ruleset/GitLab.yaml
+    interval: 86400
+  Docker:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Docker/Docker.yaml"
+    path: ./ruleset/Docker.yaml
+    interval: 86400
+  Npmjs:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Npmjs/Npmjs.yaml"
+    path: ./ruleset/Npmjs.yaml
+    interval: 86400
+  Python:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Python/Python.yaml"
+    path: ./ruleset/Python.yaml
+    interval: 86400
+  Stackexchange:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Stackexchange/Stackexchange.yaml"
+    path: ./ruleset/Stackexchange.yaml
+    interval: 86400
+  Jetbrains:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Jetbrains/Jetbrains.yaml"
+    path: ./ruleset/Jetbrains.yaml
+    interval: 86400
+  Figma:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Figma/Figma.yaml"
+    path: ./ruleset/Figma.yaml
+    interval: 86400
+  Notion:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Notion/Notion.yaml"
+    path: ./ruleset/Notion.yaml
+    interval: 86400
+  # ===== 国际流媒体 =====
   YouTube:
     type: http
     behavior: classical
     url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/YouTube/YouTube.yaml"
     path: ./ruleset/YouTube.yaml
+    interval: 86400
+  YouTubeMusic:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/YouTubeMusic/YouTubeMusic.yaml"
+    path: ./ruleset/YouTubeMusic.yaml
     interval: 86400
   Netflix:
     type: http
@@ -2549,6 +2669,36 @@ rule-providers:
     url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Disney/Disney.yaml"
     path: ./ruleset/Disney.yaml
     interval: 86400
+  HBO:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/HBO/HBO.yaml"
+    path: ./ruleset/HBO.yaml
+    interval: 86400
+  PrimeVideo:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/PrimeVideo/PrimeVideo.yaml"
+    path: ./ruleset/PrimeVideo.yaml
+    interval: 86400
+  Hulu:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Hulu/Hulu.yaml"
+    path: ./ruleset/Hulu.yaml
+    interval: 86400
+  ParamountPlus:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ParamountPlus/ParamountPlus.yaml"
+    path: ./ruleset/ParamountPlus.yaml
+    interval: 86400
+  Twitch:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Twitch/Twitch.yaml"
+    path: ./ruleset/Twitch.yaml
+    interval: 86400
   Spotify:
     type: http
     behavior: classical
@@ -2561,12 +2711,263 @@ rule-providers:
     url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/TikTok/TikTok.yaml"
     path: ./ruleset/TikTok.yaml
     interval: 86400
+  BiliBiliIntl:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/BiliBiliIntl/BiliBiliIntl.yaml"
+    path: ./ruleset/BiliBiliIntl.yaml
+    interval: 86400
+  ViuTV:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ViuTV/ViuTV.yaml"
+    path: ./ruleset/ViuTV.yaml
+    interval: 86400
+  Bahamut:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Bahamut/Bahamut.yaml"
+    path: ./ruleset/Bahamut.yaml
+    interval: 86400
+  Emby:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Emby/Emby.yaml"
+    path: ./ruleset/Emby.yaml
+    interval: 86400
+  GlobalMedia:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/GlobalMedia/GlobalMedia.yaml"
+    path: ./ruleset/GlobalMedia.yaml
+    interval: 86400
+  # ===== 通讯 =====
+  Telegram:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Telegram/Telegram.yaml"
+    path: ./ruleset/Telegram.yaml
+    interval: 86400
+  # ===== 社交媒体 =====
+  Facebook:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Facebook/Facebook.yaml"
+    path: ./ruleset/Facebook.yaml
+    interval: 86400
+  Instagram:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Instagram/Instagram.yaml"
+    path: ./ruleset/Instagram.yaml
+    interval: 86400
+  Twitter:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Twitter/Twitter.yaml"
+    path: ./ruleset/Twitter.yaml
+    interval: 86400
+  Reddit:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Reddit/Reddit.yaml"
+    path: ./ruleset/Reddit.yaml
+    interval: 86400
+  Discord:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Discord/Discord.yaml"
+    path: ./ruleset/Discord.yaml
+    interval: 86400
+  Whatsapp:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Whatsapp/Whatsapp.yaml"
+    path: ./ruleset/Whatsapp.yaml
+    interval: 86400
+  Line:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Line/Line.yaml"
+    path: ./ruleset/Line.yaml
+    interval: 86400
+  Threads:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Threads/Threads.yaml"
+    path: ./ruleset/Threads.yaml
+    interval: 86400
+  # ===== 游戏平台 =====
+  Steam:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Steam/Steam.yaml"
+    path: ./ruleset/Steam.yaml
+    interval: 86400
+  PlayStation:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/PlayStation/PlayStation.yaml"
+    path: ./ruleset/PlayStation.yaml
+    interval: 86400
+  Xbox:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Xbox/Xbox.yaml"
+    path: ./ruleset/Xbox.yaml
+    interval: 86400
+  Nintendo:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Nintendo/Nintendo.yaml"
+    path: ./ruleset/Nintendo.yaml
+    interval: 86400
+  Epic:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Epic/Epic.yaml"
+    path: ./ruleset/Epic.yaml
+    interval: 86400
+  Ubisoft:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Ubisoft/Ubisoft.yaml"
+    path: ./ruleset/Ubisoft.yaml
+    interval: 86400
+  EA:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/EA/EA.yaml"
+    path: ./ruleset/EA.yaml
+    interval: 86400
+  Blizzard:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Blizzard/Blizzard.yaml"
+    path: ./ruleset/Blizzard.yaml
+    interval: 86400
+  HoYoverse:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/HoYoverse/HoYoverse.yaml"
+    path: ./ruleset/HoYoverse.yaml
+    interval: 86400
+  # ===== 国内媒体 =====
   Bilibili:
     type: http
     behavior: classical
-    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Bilibili/Bilibili.yaml"
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/BiliBili/BiliBili.yaml"
     path: ./ruleset/Bilibili.yaml
     interval: 86400
+  TencentVideo:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/TencentVideo/TencentVideo.yaml"
+    path: ./ruleset/TencentVideo.yaml
+    interval: 86400
+  iQIYI:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/iQIYI/iQIYI.yaml"
+    path: ./ruleset/iQIYI.yaml
+    interval: 86400
+  Youku:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Youku/Youku.yaml"
+    path: ./ruleset/Youku.yaml
+    interval: 86400
+  Migu:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Migu/Migu.yaml"
+    path: ./ruleset/Migu.yaml
+    interval: 86400
+  Douyu:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Douyu/Douyu.yaml"
+    path: ./ruleset/Douyu.yaml
+    interval: 86400
+  HuYa:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/HuYa/HuYa.yaml"
+    path: ./ruleset/HuYa.yaml
+    interval: 86400
+  AcFun:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/AcFun/AcFun.yaml"
+    path: ./ruleset/AcFun.yaml
+    interval: 86400
+  DouYin:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/DouYin/DouYin.yaml"
+    path: ./ruleset/DouYin.yaml
+    interval: 86400
+  KuaiShou:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/KuaiShou/KuaiShou.yaml"
+    path: ./ruleset/KuaiShou.yaml
+    interval: 86400
+  NetEaseMusic:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/NetEaseMusic/NetEaseMusic.yaml"
+    path: ./ruleset/NetEaseMusic.yaml
+    interval: 86400
+  KugouKuwo:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/KugouKuwo/KugouKuwo.yaml"
+    path: ./ruleset/KugouKuwo.yaml
+    interval: 86400
+  NetEase:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/NetEase/NetEase.yaml"
+    path: ./ruleset/NetEase.yaml
+    interval: 86400
+  Weibo:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Weibo/Weibo.yaml"
+    path: ./ruleset/Weibo.yaml
+    interval: 86400
+  Sina:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Sina/Sina.yaml"
+    path: ./ruleset/Sina.yaml
+    interval: 86400
+  Zhihu:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Zhihu/Zhihu.yaml"
+    path: ./ruleset/Zhihu.yaml
+    interval: 86400
+  XiaoHongShu:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/XiaoHongShu/XiaoHongShu.yaml"
+    path: ./ruleset/XiaoHongShu.yaml
+    interval: 86400
+  Baidu:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Baidu/Baidu.yaml"
+    path: ./ruleset/Baidu.yaml
+    interval: 86400
+  ByteDance:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/ByteDance/ByteDance.yaml"
+    path: ./ruleset/ByteDance.yaml
+    interval: 86400
+  # ===== 国内服务（走直连）=====
   Tencent:
     type: http
     behavior: classical
@@ -2579,24 +2980,176 @@ rule-providers:
     url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Alibaba/Alibaba_Classical.yaml"
     path: ./ruleset/Alibaba_Classical.yaml
     interval: 86400
-  # ===== 游戏 / 通讯 / 系统 =====
-  Steam:
+  JingDong:
     type: http
     behavior: classical
-    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Steam/Steam.yaml"
-    path: ./ruleset/Steam.yaml
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/JingDong/JingDong.yaml"
+    path: ./ruleset/JingDong.yaml
     interval: 86400
-  Telegram:
+  MeiTuan:
     type: http
     behavior: classical
-    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Telegram/Telegram.yaml"
-    path: ./ruleset/Telegram.yaml
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/MeiTuan/MeiTuan.yaml"
+    path: ./ruleset/MeiTuan.yaml
     interval: 86400
+  Pinduoduo:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Pinduoduo/Pinduoduo.yaml"
+    path: ./ruleset/Pinduoduo.yaml
+    interval: 86400
+  XiaoMi:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/XiaoMi/XiaoMi.yaml"
+    path: ./ruleset/XiaoMi.yaml
+    interval: 86400
+  Huawei:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Huawei/Huawei.yaml"
+    path: ./ruleset/Huawei.yaml
+    interval: 86400
+  VipShop:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/VipShop/VipShop.yaml"
+    path: ./ruleset/VipShop.yaml
+    interval: 86400
+  SFExpress:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/SFExpress/SFExpress.yaml"
+    path: ./ruleset/SFExpress.yaml
+    interval: 86400
+  Eleme:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Eleme/Eleme.yaml"
+    path: ./ruleset/Eleme.yaml
+    interval: 86400
+  DiDi:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/DiDi/DiDi.yaml"
+    path: ./ruleset/DiDi.yaml
+    interval: 86400
+  XieCheng:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/XieCheng/XieCheng.yaml"
+    path: ./ruleset/XieCheng.yaml
+    interval: 86400
+  # ===== 苹果 / 微软 =====
   Microsoft:
     type: http
     behavior: classical
     url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Microsoft/Microsoft.yaml"
     path: ./ruleset/Microsoft.yaml
+    interval: 86400
+  OneDrive:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/OneDrive/OneDrive.yaml"
+    path: ./ruleset/OneDrive.yaml
+    interval: 86400
+  # ===== 支付 / 购物 =====
+  PayPal:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/PayPal/PayPal.yaml"
+    path: ./ruleset/PayPal.yaml
+    interval: 86400
+  Amazon:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Amazon/Amazon.yaml"
+    path: ./ruleset/Amazon.yaml
+    interval: 86400
+  eBay:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/eBay/eBay.yaml"
+    path: ./ruleset/eBay.yaml
+    interval: 86400
+  # ===== 企业 / 硬件 / 云 =====
+  Adobe:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Adobe/Adobe.yaml"
+    path: ./ruleset/Adobe.yaml
+    interval: 86400
+  Oracle:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Oracle/Oracle.yaml"
+    path: ./ruleset/Oracle.yaml
+    interval: 86400
+  Intel:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Intel/Intel.yaml"
+    path: ./ruleset/Intel.yaml
+    interval: 86400
+  Nvidia:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Nvidia/Nvidia.yaml"
+    path: ./ruleset/Nvidia.yaml
+    interval: 86400
+  Cisco:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Cisco/Cisco.yaml"
+    path: ./ruleset/Cisco.yaml
+    interval: 86400
+  Dell:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Dell/Dell.yaml"
+    path: ./ruleset/Dell.yaml
+    interval: 86400
+  HP:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/HP/HP.yaml"
+    path: ./ruleset/HP.yaml
+    interval: 86400
+  Samsung:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Samsung/Samsung.yaml"
+    path: ./ruleset/Samsung.yaml
+    interval: 86400
+  Sony:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Sony/Sony.yaml"
+    path: ./ruleset/Sony.yaml
+    interval: 86400
+  Dropbox:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Dropbox/Dropbox.yaml"
+    path: ./ruleset/Dropbox.yaml
+    interval: 86400
+  Cloudflare:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Cloudflare/Cloudflare.yaml"
+    path: ./ruleset/Cloudflare.yaml
+    interval: 86400
+  Wikimedia:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Wikimedia/Wikimedia.yaml"
+    path: ./ruleset/Wikimedia.yaml
+    interval: 86400
+  Speedtest:
+    type: http
+    behavior: classical
+    url: "https://cdn.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/rule/Clash/Speedtest/Speedtest.yaml"
+    path: ./ruleset/Speedtest.yaml
     interval: 86400
   # ===== 广告 / 隐私 / 劫持 =====
   Advertising_Classical:
@@ -2717,43 +3270,132 @@ rules:
   - RULE-SET,Advertising_Classical,🛑 全球拦截
   - RULE-SET,Privacy_Classical,🛑 全球拦截
   - RULE-SET,AdGuardSDNSFilter_Classical,🛑 全球拦截
-  - RULE-SET,reject,🛑 全球拦截
   - RULE-SET,Hijacking,🛑 全球拦截
+  - RULE-SET,reject,🛑 全球拦截
   # ③ 代理客户端 / BT 进程直连（防环路）
   - RULE-SET,applications,🎯 全球直连
-  # ④ AI
-  - RULE-SET,OpenAI,🔰 节点选择
-  - RULE-SET,Claude,🔰 节点选择
-  # ⑤ 开发
+  # ④ AI（单独一组：ChatGPT / Claude 对地区敏感，通常要指定固定节点）
+  - RULE-SET,OpenAI,🤖 AI 服务
+  - RULE-SET,Claude,🤖 AI 服务
+  - RULE-SET,Anthropic,🤖 AI 服务
+  - RULE-SET,Gemini,🤖 AI 服务
+  - RULE-SET,Copilot,🤖 AI 服务
+  - RULE-SET,BardAI,🤖 AI 服务
+  # ⑤ 开发 / 工具
   - RULE-SET,GitHub,🔰 节点选择
+  - RULE-SET,GitLab,🔰 节点选择
+  - RULE-SET,Docker,🔰 节点选择
+  - RULE-SET,Npmjs,🔰 节点选择
+  - RULE-SET,Python,🔰 节点选择
+  - RULE-SET,Stackexchange,🔰 节点选择
+  - RULE-SET,Jetbrains,🔰 节点选择
+  - RULE-SET,Figma,🔰 节点选择
+  - RULE-SET,Notion,🔰 节点选择
+  - RULE-SET,Cloudflare,🔰 节点选择
+  - RULE-SET,Wikimedia,🔰 节点选择
+  - RULE-SET,Dropbox,🔰 节点选择
   # ⑥ 通讯
   - RULE-SET,Telegram,📲 电报信息
   - RULE-SET,telegramcidr,📲 电报信息,no-resolve
-  # ⑦ 流媒体
+  # ⑦ 社交媒体
+  - RULE-SET,Twitter,📱 社交媒体
+  - RULE-SET,Facebook,📱 社交媒体
+  - RULE-SET,Instagram,📱 社交媒体
+  - RULE-SET,Reddit,📱 社交媒体
+  - RULE-SET,Discord,📱 社交媒体
+  - RULE-SET,Whatsapp,📱 社交媒体
+  - RULE-SET,Line,📱 社交媒体
+  - RULE-SET,Threads,📱 社交媒体
+  # ⑧ 国际流媒体（具体的放前面，GlobalMedia 这种大杂烩放最后）
   - RULE-SET,YouTube,🌍 国外媒体
+  - RULE-SET,YouTubeMusic,🌍 国外媒体
   - RULE-SET,Netflix,🌍 国外媒体
   - RULE-SET,Disney,🌍 国外媒体
+  - RULE-SET,HBO,🌍 国外媒体
+  - RULE-SET,PrimeVideo,🌍 国外媒体
+  - RULE-SET,Hulu,🌍 国外媒体
+  - RULE-SET,ParamountPlus,🌍 国外媒体
+  - RULE-SET,Twitch,🌍 国外媒体
   - RULE-SET,Spotify,🌍 国外媒体
   - RULE-SET,TikTok,🌍 国外媒体
+  - RULE-SET,BiliBiliIntl,🌍 国外媒体
+  - RULE-SET,ViuTV,🌍 国外媒体
+  - RULE-SET,Bahamut,🌍 国外媒体
+  - RULE-SET,Emby,🌍 国外媒体
+  - RULE-SET,GlobalMedia,🌍 国外媒体
+  # ⑨ 国内媒体（默认直连：这些站走代理反而更慢，还可能被限制）
   - RULE-SET,Bilibili,🌏 国内媒体
-  - RULE-SET,Tencent,🌏 国内媒体
-  - RULE-SET,Alibaba_Classical,🌏 国内媒体
-  # ⑧ 游戏
-  - RULE-SET,Steam,🔰 节点选择
-  # ⑨ 系统服务
-  - RULE-SET,apple,🎯 全球直连
-  - RULE-SET,icloud,🎯 全球直连
-  - RULE-SET,Microsoft,🎯 全球直连
-  # ⑩ 搜索 / 工具
-  - RULE-SET,google,🔰 节点选择
-  # ⑪ 国内域名与网段（放在 tld-not-cn 之前，否则 .cn 会被后面误判）
+  - RULE-SET,TencentVideo,🌏 国内媒体
+  - RULE-SET,iQIYI,🌏 国内媒体
+  - RULE-SET,Youku,🌏 国内媒体
+  - RULE-SET,Migu,🌏 国内媒体
+  - RULE-SET,Douyu,🌏 国内媒体
+  - RULE-SET,HuYa,🌏 国内媒体
+  - RULE-SET,AcFun,🌏 国内媒体
+  - RULE-SET,DouYin,🌏 国内媒体
+  - RULE-SET,KuaiShou,🌏 国内媒体
+  - RULE-SET,NetEaseMusic,🌏 国内媒体
+  - RULE-SET,KugouKuwo,🌏 国内媒体
+  - RULE-SET,NetEase,🌏 国内媒体
+  - RULE-SET,Weibo,🌏 国内媒体
+  - RULE-SET,Sina,🌏 国内媒体
+  - RULE-SET,Zhihu,🌏 国内媒体
+  - RULE-SET,XiaoHongShu,🌏 国内媒体
+  - RULE-SET,Baidu,🌏 国内媒体
+  - RULE-SET,ByteDance,🌏 国内媒体
+  # ⑩ 游戏平台
+  - RULE-SET,Steam,🎮 游戏平台
+  - RULE-SET,PlayStation,🎮 游戏平台
+  - RULE-SET,Xbox,🎮 游戏平台
+  - RULE-SET,Nintendo,🎮 游戏平台
+  - RULE-SET,Epic,🎮 游戏平台
+  - RULE-SET,Ubisoft,🎮 游戏平台
+  - RULE-SET,EA,🎮 游戏平台
+  - RULE-SET,Blizzard,🎮 游戏平台
+  - RULE-SET,HoYoverse,🎮 游戏平台
+  # ⑪ 苹果 / 微软（默认直连；要用外区 App Store 就在组里手动切）
+  - RULE-SET,apple,🍎 苹果服务
+  - RULE-SET,icloud,🍎 苹果服务
+  - RULE-SET,Microsoft,Ⓜ️ 微软服务
+  - RULE-SET,OneDrive,Ⓜ️ 微软服务
+  # ⑫ 支付 / 购物
+  - RULE-SET,PayPal,🛒 支付购物
+  - RULE-SET,Amazon,🛒 支付购物
+  - RULE-SET,eBay,🛒 支付购物
+  # ⑬ 国内服务（直连，别浪费代理流量）
+  - RULE-SET,Tencent,🎯 全球直连
+  - RULE-SET,Alibaba_Classical,🎯 全球直连
+  - RULE-SET,JingDong,🎯 全球直连
+  - RULE-SET,MeiTuan,🎯 全球直连
+  - RULE-SET,Pinduoduo,🎯 全球直连
+  - RULE-SET,XiaoMi,🎯 全球直连
+  - RULE-SET,Huawei,🎯 全球直连
+  - RULE-SET,VipShop,🎯 全球直连
+  - RULE-SET,SFExpress,🎯 全球直连
+  - RULE-SET,Eleme,🎯 全球直连
+  - RULE-SET,DiDi,🎯 全球直连
+  - RULE-SET,XieCheng,🎯 全球直连
+  # ⑭ 硬件 / 企业站（国内可直连，走代理纯属浪费）
+  - RULE-SET,Adobe,🎯 全球直连
+  - RULE-SET,Oracle,🎯 全球直连
+  - RULE-SET,Intel,🎯 全球直连
+  - RULE-SET,Nvidia,🎯 全球直连
+  - RULE-SET,Cisco,🎯 全球直连
+  - RULE-SET,Dell,🎯 全球直连
+  - RULE-SET,HP,🎯 全球直连
+  - RULE-SET,Samsung,🎯 全球直连
+  - RULE-SET,Sony,🎯 全球直连
+  # ⑮ 测速站走直连：走代理测出来的不是你的真实带宽
+  - RULE-SET,Speedtest,🎯 全球直连
+  # ⑯ 国内域名与网段（放在 tld-not-cn 之前，否则 .cn 会被后面误判）
   - RULE-SET,direct,🎯 全球直连
   - RULE-SET,cncidr,🎯 全球直连,no-resolve
-  # ⑫ 被墙域名 / 非 CN 顶级域
+  # ⑰ 被墙域名 / 非 CN 顶级域
   - RULE-SET,gfw,🔰 节点选择
   - RULE-SET,proxy,🔰 节点选择
   - RULE-SET,tld-not-cn,🔰 节点选择
-  # ⑬ 兜底：剩余国内 IP 直连，其余走漏网之鱼
+  - RULE-SET,google,🔰 节点选择
+  # ⑱ 兜底：剩余国内 IP 直连，其余走漏网之鱼
   - GEOIP,CN,🎯 全球直连
   - MATCH,🐟 漏网之鱼
 YAML
@@ -2763,51 +3405,93 @@ clash_rules_simple(){
     cat <<'YAML'
 rules:
   - GEOIP,private,🎯 全球直连,no-resolve
+  - GEOSITE,private,🎯 全球直连
   - GEOSITE,category-ads-all,🛑 全球拦截
-  - GEOSITE,openai,🔰 节点选择
-  - DOMAIN-SUFFIX,claude.ai,🔰 节点选择
-  - DOMAIN-SUFFIX,anthropic.com,🔰 节点选择
+  - GEOSITE,openai,🤖 AI 服务
+  - DOMAIN-SUFFIX,claude.ai,🤖 AI 服务
+  - DOMAIN-SUFFIX,anthropic.com,🤖 AI 服务
+  - DOMAIN-SUFFIX,gemini.google.com,🤖 AI 服务
+  - DOMAIN-SUFFIX,copilot.microsoft.com,🤖 AI 服务
   - GEOSITE,github,🔰 节点选择
   - GEOSITE,google,🔰 节点选择
   - GEOSITE,telegram,📲 电报信息
+  - GEOSITE,twitter,📱 社交媒体
+  - GEOSITE,facebook,📱 社交媒体
+  - GEOSITE,instagram,📱 社交媒体
+  - GEOSITE,reddit,📱 社交媒体
+  - GEOSITE,discord,📱 社交媒体
   - GEOSITE,youtube,🌍 国外媒体
   - GEOSITE,netflix,🌍 国外媒体
   - GEOSITE,disney,🌍 国外媒体
+  - GEOSITE,hbo,🌍 国外媒体
+  - GEOSITE,primevideo,🌍 国外媒体
   - GEOSITE,spotify,🌍 国外媒体
   - GEOSITE,tiktok,🌍 国外媒体
   - GEOSITE,bilibili,🌏 国内媒体
   - GEOSITE,tencent,🌏 国内媒体
-  - GEOSITE,apple,🎯 全球直连
-  - GEOSITE,microsoft,🎯 全球直连
+  - GEOSITE,iqiyi,🌏 国内媒体
+  - GEOSITE,youku,🌏 国内媒体
+  - GEOSITE,netease,🌏 国内媒体
+  - GEOSITE,weibo,🌏 国内媒体
+  - GEOSITE,zhihu,🌏 国内媒体
+  - GEOSITE,baidu,🌏 国内媒体
+  - GEOSITE,steam,🎮 游戏平台
+  - GEOSITE,epicgames,🎮 游戏平台
+  - GEOSITE,playstation,🎮 游戏平台
+  - GEOSITE,xbox,🎮 游戏平台
+  - GEOSITE,apple,🍎 苹果服务
+  - GEOSITE,microsoft,Ⓜ️ 微软服务
   - GEOSITE,cn,🎯 全球直连
   - GEOIP,CN,🎯 全球直连
   - MATCH,🐟 漏网之鱼
 YAML
 }
 
+clash_node_ok(){
+    local type="$1" uuidv="$2" pw="$3" sni="$4" extra="$5" pub="$6"
+    case "$type" in
+      vless-reality|h2-reality|grpc-reality)
+        [ -n "$uuidv" ] && [ -n "$pub" ] && [ -n "$sni" ] || return 1 ;;
+      vless-ws-tls|vless-ws-argo|vmess-ws-tls)
+        [ -n "$uuidv" ] && [ -n "$sni" ] || return 1 ;;
+      trojan|anytls|shadowtls|naive|http2)
+        [ -n "$pw" ] && [ -n "$sni" ] || return 1 ;;
+      hysteria2|hy2-obfs|tuic)
+        [ -n "$pw" ] && [ -n "$sni" ] || return 1 ;;
+      shadowsocks)
+        [ -n "$pw" ] && [ -n "$extra" ] || return 1 ;;
+      *)
+        return 1 ;;
+    esac
+    return 0
+}
+
 export_clash(){
     mkdir -p "$SUBDIR"
     get_ip
-    local proxies="" row name type port uuidv pw sni extra pub sid fp cfp tls_verify
+    local proxies="" row name type port uuidv pw sni extra pub sid fp tls_verify
+    local skipped="" kept_names=""
     fp="${FINGERPRINT:-chrome}"
-    cfp="$(cert_fingerprint_clash 2>/dev/null)"
-    if [ -n "$cfp" ]; then
-        tls_verify="skip-cert-verify: false, fingerprint: ${cfp}"
-    else
-        tls_verify="skip-cert-verify: true"
-    fi
+    tls_verify="skip-cert-verify: true"
     while IFS= read -r row; do
         name="$(jq -r '.name' <<<"$row")";   type="$(jq -r '.type' <<<"$row")"
         port="$(jq -r '.port' <<<"$row")"
         uuidv="$(jq -r '.uuid // empty' <<<"$row")"; pw="$(jq -r '.password // empty' <<<"$row")"
         sni="$(jq -r '.sni // empty' <<<"$row")";    extra="$(jq -r '.extra // empty' <<<"$row")"
         pub="$(jq -r '.public_key // empty' <<<"$row")"; sid="$(jq -r '.short_id // empty' <<<"$row")"
+        if ! clash_node_ok "$type" "$uuidv" "$pw" "$sni" "$extra" "$pub"; then
+            skipped="${skipped}${skipped:+, }${name}(${type})"
+            continue
+        fi
         local _adv_ip _adv_port
         _adv_ip="$(advertise_ip)"; _adv_port="$(advertise_port "$port")"
         local _argo_dom
         _argo_dom="$(jq -r '.argo // empty' <<<"$row")"
         [ -n "$_argo_dom" ] && { _adv_ip="$_argo_dom"; _adv_port=443; }
         local safe_name; safe_name="$(printf '%s' "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        local safe_pw; safe_pw="$(printf '%s' "$pw" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        kept_names="${kept_names}      - \"${safe_name}\"
+"
         local uot=""
         if [ "$UOT_ENABLED" = "1" ]; then
             case "$type" in
@@ -2820,16 +3504,17 @@ export_clash(){
           vless-reality) entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
           h2-reality)    entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: http, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
           grpc-reality)  entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: grpc, grpc-opts: {grpc-service-name: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
-          vless-ws-tls)  entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, ${tls_verify}${uot}}" ;;
-          vless-ws-argo) entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, skip-cert-verify: false${uot}}" ;;
+          vless-ws-tls)  entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, ${tls_verify}${uot}}" ;;
+          vless-ws-argo) entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, skip-cert-verify: true${uot}}" ;;
           vmess-ws-tls)  entry="{name: \"${safe_name}\", type: vmess, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, alterId: 0, cipher: auto, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, ${tls_verify}${uot}}" ;;
-          trojan)        entry="{name: \"${safe_name}\", type: trojan, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${pw}\", udp: true, sni: ${sni}, client-fingerprint: ${fp}, ${tls_verify}${uot}}" ;;
-          anytls)        entry="{name: \"${safe_name}\", type: anytls, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${pw}\", udp: true, sni: ${sni}, ${tls_verify}${uot}}" ;;
-          shadowsocks)   entry="{name: \"${safe_name}\", type: ss, server: \"${_adv_ip}\", port: ${_adv_port}, cipher: ${extra}, password: \"${pw}\", udp: true${uot}}" ;;
-          hysteria2|hy2-obfs|hy2-realm) entry="{name: \"${safe_name}\", type: hysteria2, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${pw}\", sni: ${sni}, ${tls_verify}}" ;;
-          tuic)          entry="{name: \"${safe_name}\", type: tuic, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, password: \"${pw}\", alpn: [h3], sni: ${sni}, ${tls_verify}}" ;;
-          shadowtls)     entry="{name: \"${safe_name}\", type: ss, server: \"${_adv_ip}\", port: ${_adv_port}, cipher: 2022-blake3-aes-128-gcm, password: \"${pw}\", plugin: shadow-tls, client-fingerprint: ${fp}, plugin-opts: {host: ${sni}, password: \"${pw}\", version: 3}, ${tls_verify}}" ;;
-          naive)         entry="{name: \"${safe_name}\", type: http, server: \"${_adv_ip}\", port: ${_adv_port}, username: ${uuidv}, password: \"${pw}\", tls: true, sni: ${sni}, ${tls_verify}}" ;;
+          trojan)        entry="{name: \"${safe_name}\", type: trojan, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${safe_pw}\", udp: true, sni: ${sni}, client-fingerprint: ${fp}, ${tls_verify}${uot}}" ;;
+          anytls)        entry="{name: \"${safe_name}\", type: anytls, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${safe_pw}\", udp: true, sni: ${sni}, client-fingerprint: ${fp}, ${tls_verify}${uot}}" ;;
+          shadowsocks)   entry="{name: \"${safe_name}\", type: ss, server: \"${_adv_ip}\", port: ${_adv_port}, cipher: ${extra}, password: \"${safe_pw}\", udp: true${uot}}" ;;
+          hysteria2|hy2-obfs|hy2-realm) entry="{name: \"${safe_name}\", type: hysteria2, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${safe_pw}\", sni: ${sni}, ${tls_verify}}" ;;
+          tuic)          entry="{name: \"${safe_name}\", type: tuic, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, password: \"${safe_pw}\", alpn: [h3], sni: ${sni}, ${tls_verify}}" ;;
+          shadowtls)     entry="{name: \"${safe_name}\", type: ss, server: \"${_adv_ip}\", port: ${_adv_port}, cipher: 2022-blake3-aes-128-gcm, password: \"${safe_pw}\", plugin: shadow-tls, client-fingerprint: ${fp}, plugin-opts: {host: ${sni}, password: \"${safe_pw}\", version: 3}, ${tls_verify}}" ;;
+          naive)         entry="{name: \"${safe_name}\", type: http, server: \"${_adv_ip}\", port: ${_adv_port}, username: ${uuidv}, password: \"${safe_pw}\", tls: true, sni: ${sni}, ${tls_verify}}" ;;
+          http2)         entry="{name: \"${safe_name}\", type: http, server: \"${_adv_ip}\", port: ${_adv_port}, username: ${uuidv}, password: \"${safe_pw}\", tls: true, alpn: [h2], sni: ${sni}, ${tls_verify}}" ;;
           *)             continue ;;
         esac
         [ -n "$entry" ] || continue
@@ -2838,13 +3523,11 @@ export_clash(){
     done < <(jq -c '.[]' "$NODES" 2>/dev/null)
 
     local names=""
-    names="$(jq -r '.[].name' "$NODES" 2>/dev/null | while IFS= read -r n; do
-        printf '      - "%s"\n' "$(printf '%s' "$n" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-    done)"
+    names="$kept_names"
 
     {
       echo "# Generated by singbox-nat / sing-box NAT ${VERSION}"
-      echo "# 自签证书节点已用 fingerprint 锁定证书指纹（skip-cert-verify: false）"
+      echo "# 所有 TLS 节点均为 skip-cert-verify: true —— 客户端无需手动开「跳过证书校验」"
       echo "mixed-port: 7890"
       echo "allow-lan: false"
       echo "mode: rule"
@@ -2868,6 +3551,11 @@ export_clash(){
           echo
           clash_rules_full
         fi
+      fi
+      if [ -n "$skipped" ]; then
+        echo
+        echo "# ---- 以下节点 Clash/mihomo 不支持，已自动跳过（其它客户端照常可用）----"
+        echo "# $skipped"
       fi
     } >"$SUBDIR/clash.yaml"
 
@@ -2960,6 +3648,7 @@ export_v2rayn(){
     local plain="$SUBDIR/v2rayn_raw.txt"
     : >"$plain"
     local row link
+    local LINK_CERT_INSECURE=pcs
     while IFS= read -r row; do
         link="$(link_v2rayn_for_node "$row" 2>/dev/null)" || link=""
         [ -n "$link" ] || link="$(link_for_node "$row" 2>/dev/null)" || link=""
@@ -3134,7 +3823,7 @@ export_singbox_json(){
           vless-ws-argo)
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg sn "$sni" --arg pa "$extra" \
               '{type:"vless",tag:$t,server:$s,server_port:$p,uuid:$u,
-                tls:{enabled:true,server_name:$sn,insecure:false},
+                tls:{enabled:true,server_name:$sn,insecure:true},
                 transport:{type:"ws",path:$pa,headers:{Host:$sn}}}' 2>/dev/null)" ;;
           trojan)
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" \
@@ -5193,9 +5882,9 @@ client_menu(){
         kv "节点命名" "${DIM}<协议类型>（未探测到国家）${RESET}"
     fi
     case "${LINK_CERT_INSECURE:-auto}" in
-        auto)     kv "证书放行" "${GREEN}自动${RESET}  ${DIM}（各客户端开箱即用，默认）${RESET}" ;;
-        pcs)      kv "证书放行" "${CYAN}指纹钉死 (pcs)${RESET}  ${DIM}（最安全，小火箭需手动开）${RESET}" ;;
-        insecure) kv "证书放行" "${YELLOW}统一跳过校验${RESET}  ${DIM}（最省事，v2rayN 请改用指纹）${RESET}" ;;
+        auto)     kv "证书放行" "${GREEN}自动分派${RESET}  ${DIM}（各客户端各配一套）${RESET}" ;;
+        pcs)      kv "证书放行" "${CYAN}指纹钉死 (pcs)${RESET}  ${DIM}（最安全，其它客户端需手动开）${RESET}" ;;
+        insecure) kv "证书放行" "${YELLOW}统一跳过校验${RESET}  ${DIM}（默认，客户端不用手动开）${RESET}" ;;
     esac
     case "${CLASH_RULE_MODE:-full}" in
         full)   kv "Clash 分流" "${GREEN}完整${RESET}  ${DIM}（七组 + 远程规则集）${RESET}" ;;
@@ -5360,9 +6049,9 @@ cert_insecure_menu(){
     panel "证书放行策略"
     local _cur="${LINK_CERT_INSECURE:-auto}"
     case "$_cur" in
-        auto)     kv "当前策略" "${GREEN}自动${RESET}" ;;
+        auto)     kv "当前策略" "${GREEN}自动分派${RESET}  ${DIM}(各出口各配一套)${RESET}" ;;
         pcs)      kv "当前策略" "${CYAN}指纹钉死 (pcs)${RESET}" ;;
-        insecure) kv "当前策略" "${YELLOW}统一跳过校验${RESET}" ;;
+        insecure) kv "当前策略" "${YELLOW}统一跳过校验${RESET}  ${DIM}(默认)${RESET}" ;;
     esac
     hr
     info "用的是自签证书（CN=服务器IP），客户端默认不信任，必须被告知放行。"
@@ -5373,27 +6062,31 @@ cert_insecure_menu(){
     echo "    ${CYAN}allowInsecure=1${RESET}  通用 / 小火箭（Shadowrocket）"
     echo
     info "所以做不到「所有客户端一个参数全搞定」—— 只能各出口各配一套。"
-    info "默认的「自动」就是替你把这件事做了，正常情况下你不用动这里。"
+    info "现在的默认是「统一跳过校验」：客户端里不用再手动开任何开关。"
+    info "唯一例外是 v2rayN 那份订阅（它必须用 pcs，否则新版 Xray 拒绝启动）——"
+    info "但那份也是零配置可用，你同样不用手动开。"
     hr
-    echo "  1. 自动（推荐）  —— 各客户端开箱即用，默认"
-    echo "  2. 指纹钉死 pcs  —— 最安全；适合只用 v2rayN，小火箭需自己开"
-    echo "  3. 统一跳过校验  —— 最省事；适合只用小火箭/sing-box 系，v2rayN 会启动失败"
+    echo "  1. 统一跳过校验  —— 最省事，默认（小火箭 / Karing / NekoBox / Hiddify / v2rayA 全开箱即用）"
+    echo "  2. 自动分派      —— 标准链接用 pcs、小火箭用 allowInsecure，兼容最广"
+    echo "  3. 指纹钉死 pcs  —— 最安全；适合只用 v2rayN / Xray，其它客户端需自己开"
     echo "  0. 返回"
     read -r -p "请选择： " cc || cc=""
     case "$cc" in
-      1) LINK_CERT_INSECURE=auto ;;
-      2) LINK_CERT_INSECURE=pcs ;;
-      3) LINK_CERT_INSECURE=insecure ;;
+      1) LINK_CERT_INSECURE=insecure ;;
+      2) LINK_CERT_INSECURE=auto ;;
+      3) LINK_CERT_INSECURE=pcs ;;
       0) return ;;
       *) warn "无效选项"; sleep 1; continue ;;
     esac
     save_settings; export_all 2>/dev/null
     ok "证书放行策略已设为：${LINK_CERT_INSECURE}"
     case "$LINK_CERT_INSECURE" in
-      auto)     info "已重新生成订阅 —— 各客户端按自己的生态拿到对应写法，无需手动开" ;;
+      auto)     info "已重新生成订阅 —— 标准链接用 pcs、小火箭用 allowInsecure，各客户端各自适配" ;;
       pcs)      info "已重新生成订阅 —— 链接里带证书指纹；小火箭等不认识它，需手动开「允许不安全」" ;;
-      insecure) info "已重新生成订阅 —— 链接统一带 allowInsecure+insecure" ;;
+      insecure) info "已重新生成订阅 —— 链接统一带 allowInsecure+insecure，客户端不用手动开" ;;
     esac
+    info "v2rayN 那份订阅始终用 pcs（新版 Xray 不认 allowInsecure，否则会拒绝启动）"
+    info "Clash 那份始终 skip-cert-verify: true，不受这里影响"
     info "客户端请重新拉一次订阅（或重新扫码）后生效"
     pause
   done
@@ -6479,7 +7172,7 @@ _alt_variant_urls(){
 fetch_singbox_release(){
     local api="https://api.github.com/repos/SagerNet/sing-box/releases?per_page=50"
     local json
-    json="$(curl -fsSL --max-time 30 "$api" 2>/dev/null)" || return 1
+    json="$(run_with_timeout 35 curl -fsSL --connect-timeout 8 --max-time 30 "$api")" || return 1
     printf '%s' "$json" | jq -r --argjson sufs "$(_asset_suffixes_json)" --arg ch "${SINGBOX_CHANNEL:-any}" '
       def want: if $ch == "stable" then (.prerelease == false)
                 elif $ch == "pre" then (.prerelease == true)
@@ -6522,7 +7215,7 @@ fetch_singbox_version(){
     want="$(printf '%s' "$want" | tr -d '[:space:]' | sed 's/^v//')"
     [ -n "$want" ] || return 1
     tag="v${want}"
-    json="$(curl -fsSL --max-time 20 "https://api.github.com/repos/SagerNet/sing-box/releases/tags/${tag}" 2>/dev/null)"
+    json="$(run_with_timeout 25 curl -fsSL --connect-timeout 8 --max-time 20 "https://api.github.com/repos/SagerNet/sing-box/releases/tags/${tag}")"
     if [ -n "$json" ]; then
         url="$(printf '%s' "$json" | jq -r --argjson sufs "$(_asset_suffixes_json)" \
             '[ $sufs[] as $s | .assets[]? | select(.name | endswith($s + ".tar.gz")) | .browser_download_url ][0] // empty' 2>/dev/null)"
@@ -6537,7 +7230,7 @@ fetch_singbox_version(){
 list_singbox_versions(){
     local api="https://api.github.com/repos/SagerNet/sing-box/releases?per_page=50"
     local json
-    json="$(curl -fsSL --max-time 30 "$api" 2>/dev/null)" || return 1
+    json="$(run_with_timeout 35 curl -fsSL --connect-timeout 8 --max-time 30 "$api")" || return 1
     printf '%s' "$json" | jq -r --argjson sufs "$(_asset_suffixes_json)" '
       def restof: ( .tag_name | sub("^v";"") | split("-")[1:] | join("-") | ascii_downcase );
       def tierof:
@@ -6559,6 +7252,11 @@ list_singbox_versions(){
       | .[]
       | "\(.tag)\t\(if .pre then "测试版" else "正式版" end)"
     ' 2>/dev/null
+}
+_sb_fetch_asset(){
+    local out="$1" url="$2" log="$3"
+    curl -fLsS --connect-timeout 10 --max-time 120 --retry 1 --retry-delay 2 \
+         -o "$out" "$url" 2>"$log"
 }
 download_singbox(){
     local want_tag="${1:-${SINGBOX_WANT_VERSION:-}}"
@@ -6586,7 +7284,7 @@ download_singbox(){
     if [ -z "${url:-}" ]; then
         warn "仍在尝试 GitHub 官方 latest（仅正式版）"
         api="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
-        json="$(curl -fsSL --max-time 30 "$api")" || { warn "无法访问 GitHub API"; return 1; }
+        json="$(run_with_timeout 35 curl -fsSL --connect-timeout 8 --max-time 30 "$api")" || { warn "无法访问 GitHub API"; return 1; }
         tag="$(jq -r '.tag_name // empty' <<<"$json")"
         [ -n "$tag" ] || { warn "无法获取 sing-box 版本"; return 1; }
         url="$(jq -r --argjson sufs "$(_asset_suffixes_json)" '[ $sufs[] as $s | .assets[]? | select(.name | endswith($s + ".tar.gz")) | .browser_download_url ][0] // empty' <<<"$json")"
@@ -6601,14 +7299,27 @@ download_singbox(){
         _cands+=("$_alt")
     done
 
-    local _u _tried=0 _last=""
+    local _u _tried=0 _last="" _dlrc=0 _fetch="" _dl_log="" _netbad=0
     local _lc="glibc"; is_musl && _lc="musl"
+    _dl_log="${LOGDIR:-/tmp}/singbox-download.log"
+    : > "$_dl_log" 2>/dev/null || _dl_log="/tmp/singbox-nat-download.log"
     for _u in "${_cands[@]}"; do
         [ -n "$_u" ] || continue
         _tried=$((_tried + 1))
         tmp="$(mktemp -d)" || { warn "无法创建临时目录"; return 1; }
-        if ! curl -fL --retry 3 "$_u" -o "$tmp/sing-box.tar.gz" 2>/dev/null; then
-            rm -rf "$tmp"; _last="下载失败：$(basename "$_u")"; continue
+        _fetch="$_u"
+        [ -n "${SINGBOX_DOWNLOAD_MIRROR:-}" ] && _fetch="${SINGBOX_DOWNLOAD_MIRROR%/}/${_u}"
+        info "正在下载 $(basename "$_u")（本机 ${_lc}，最长 150 秒）..."
+        : > "$_dl_log" 2>/dev/null || true
+        _dlrc=0
+        run_with_timeout 150 _sb_fetch_asset "$tmp/sing-box.tar.gz" "$_fetch" "$_dl_log" || _dlrc=$?
+        if [ "$_dlrc" != 0 ]; then
+            rm -rf "$tmp"
+            case "$_dlrc" in 5|6|7|28|35|52|56|124) _netbad=1 ;; esac
+            _last="下载失败：$(basename "$_u")（curl 退出码 ${_dlrc}）"
+            [ -s "$_dl_log" ] && warn "下载报错：$(tail -n 1 "$_dl_log" | tr '\n' ' ')"
+            [ "$_netbad" = 1 ] && break
+            continue
         fi
         if ! tar -xzf "$tmp/sing-box.tar.gz" -C "$tmp" 2>/dev/null; then
             rm -rf "$tmp"; _last="解压失败（文件可能不完整）"; continue
@@ -6638,6 +7349,13 @@ download_singbox(){
     done
     rm -f "${BIN}.new" 2>/dev/null || true
     warn "${_last:-下载安装失败}（已尝试 ${_tried} 个构建变体）"
+    if [ "$_netbad" = 1 ]; then
+        warn "本机连不上 GitHub 下载源，可任选一种方式后重跑："
+        echo  "    1) 配置代理：export HTTPS_PROXY=http://代理IP:端口"
+        echo  "    2) 挂镜像：  SINGBOX_DOWNLOAD_MIRROR=https://ghproxy.net/ bash 本脚本"
+        echo  "    3) 手动下载对应 ${_lc} 包，解出 sing-box 放到 ${BIN} 后重跑安装"
+    fi
+    echo  "    下载日志：${_dl_log}"
     return 1
 }
 write_self_menu(){

@@ -2,9 +2,9 @@
 
 一个 Bash 单文件脚本，在 Linux 服务器上部署和管理 sing-box 的 **16 种代理协议**，带菜单界面、节点管理和**订阅服务**——让 v2rayN / Clash(mihomo) / sing-box / 小火箭 等客户端通过**一个订阅链接**导入全部节点。
 
-**V3.9.11**
+**V3.9.14**
 
-> **本次更新**：**SNI 优选的测速站全换成国外的**——原来 4 个国内测速站全部移除，换成 `speed.cloudflare.com` / `www.speedtest.net` / `www.ookla.com` / `testmy.net`（都是国外站点、大陆可直连、走全球 CDN）。此前版本已有：cloudflared 能卸干净、Argo 状态行显示内存 CPU、Argo 提升主菜单第 12 项、Clash 配置可直接下载、修复 fork bomb、OpenRC 支持。详见文末「更新日志」。
+> **本次更新**：修掉「SNI 优选明明测出 25ms 却说未成功、沿用 31ms 默认值」——旧逻辑见连续 3 个候选超时就 `return 1`，把前面十几个有效结果全部作废；而 V3.9.11 恰好把 4 个国外测速站排在候选池末尾，容易一起超时。现在**提前收手 ≠ 优选失败**：只要有有效样本就照常用最快的那个，并把排序榜单、推荐域名、样本数都打出来；只有零成功样本才判环境异常。批量部署也不会再因结果丢失而给每个协议各重测一遍。详见文末「更新日志」。
 
 ---
 
@@ -36,6 +36,32 @@ sb help       # 帮助
 首次运行会引导安装 sing-box 内核。
 
 > `sb` 是**安装时这份脚本的快照**。改了源码后需 `sb update` 才生效。
+
+### 下载卡住怎么办（V3.9.13 起已不会无限挂起）
+
+国内 / NAT 小鸡经常连不上 `github.com` 的 release 下载。旧版会**静默卡在「55% 下载 sing-box」十几分钟**：那句 curl 既没有超时，又把报错全丢进 `/dev/null`，还要 `--retry 3` × 3 个 libc 变体挨个试。
+
+V3.9.13 起最长 150 秒必定给出明确报错，并按下面顺序自救：
+
+```bash
+# 先看日志，确认是 DNS / 连接 / TLS 的哪一种（路径以面板里的安装目录为准）
+cat /usr/local/share/singbox-nat/logs/singbox-download.log
+
+# 方式 1：有代理，导出后重跑
+export HTTPS_PROXY=http://代理IP:端口
+bash sing-box.sh
+
+# 方式 2：挂 GitHub 镜像前缀（只改写下载 URL，二进制仍走原有的解压 + 执行自检）
+SINGBOX_DOWNLOAD_MIRROR=https://ghproxy.net/ bash sing-box.sh
+
+# 方式 3：完全手动，下载对应包解出二进制
+#   Alpine 要 *-linux-amd64-musl.tar.gz，其它系统要 *-glibc.tar.gz
+tar -xzf sing-box-*-linux-*.tar.gz
+install -m 0755 sing-box-*/sing-box /usr/local/bin/sing-box
+bash sing-box.sh     # 重跑补齐服务与菜单
+```
+
+判断卡在哪一步：另开一个 SSH 执行 `ps aux | grep curl`，进程长时间不动就是连不上 GitHub；`curl -I --connect-timeout 8 https://github.com` 可直接验证。`Ctrl+C` 中断不会破坏系统，依赖与目录都是幂等的，处理好网络后重跑即可。
 
 ---
 
@@ -125,24 +151,32 @@ http://<服务器IP>:8088/sub/<token>/std
 
 > 这份纯标准链接里**不含 `http2` / `http3`**（Xray 系客户端会判格式错误）。这两个协议请用 **sing-box JSON** 或 **Clash YAML** 导入。
 
-### Clash 订阅带分流规则（七组）
+### Clash 订阅带分流规则（十四组）
 
-Clash / mihomo 拿到的**不只是节点**，而是一份能直接用的分流配置：
+Clash / mihomo 拿到的**不只是节点**，而是一份能直接用的分流配置（布局参考网上主流的 ACL4SSR 那套）：
 
-| 代理组 | 走什么 |
+| 代理组 | 默认走什么 |
 |---|---|
-| 🔰 节点选择 | 手动挑节点（AI / GitHub / Steam 默认走这里） |
+| 🔰 节点选择 | 手动挑节点（GitHub / 开发工具 / 被墙域名） |
 | ♻️ 自动选择 | 延迟测速自动选，排在节点选择第一位 |
-| 🎯 全球直连 | 国内网站 / Apple / 微软 / iCloud |
-| 🛑 全球拦截 | 广告 / 追踪器 / 域名劫持 |
-| 🌍 国外媒体 | Netflix / YouTube / Disney+ / TikTok |
-| 🌏 国内媒体 | Bilibili / 腾讯视频 / 爱奇艺 |
+| 🤖 AI 服务 | ChatGPT / Claude / Gemini / Copilot（地区敏感，建议单独指定节点） |
+| 🌍 国外媒体 | Netflix / YouTube / Disney+ / HBO / Prime / Twitch / Spotify / TikTok |
+| 🌏 国内媒体 | Bilibili / 腾讯视频 / 爱奇艺 / 优酷 / 网易云 / 微博 / 知乎 / 抖音 |
+| 📱 社交媒体 | X / Facebook / Instagram / Reddit / Discord / WhatsApp / Line |
+| 🎮 游戏平台 | Steam / PlayStation / Xbox / Switch / Epic / EA / 暴雪 / 米哈游 |
 | 📲 电报信息 | Telegram |
+| 🍎 苹果服务 | App Store / iCloud（要外区就在组里切节点） |
+| Ⓜ️ 微软服务 | Microsoft / OneDrive |
+| 🛒 支付购物 | PayPal / Amazon / eBay |
+| 🎯 全球直连 | 国内服务、硬件厂商站、测速站 |
+| 🛑 全球拦截 | 广告 / 追踪器 / 域名劫持 |
 | 🐟 漏网之鱼 | 兜底 |
 
-规则集（OpenAI / Claude / GitHub / 流媒体 / 广告拦截…共 31 个）走 **jsDelivr CDN**，客户端首次导入会下载几十个小文件，几秒钟完事。
+规则集（`rule-providers`）**共 115 个**，走 **jsDelivr CDN**，客户端首次导入会下载一批小文件，几秒钟完事。
 
-> **连不上 CDN 或只想立刻能用？** 主菜单 **7（客户端设置）→ 7** 切到「精简分流」——只用内核自带的 GEOSITE / GEOIP，一个字节都不用下载。
+> **连不上 CDN 或只想立刻能用？** 主菜单 **7（客户端设置）→ 7** 切到「精简分流」——只用内核自带的 GEOSITE / GEOIP，一个字节都不用下载（组名和完整模式完全一致，来回切不会错位）。
+
+**Clash 用不了的节点不会出现在 YAML 里。** `hy2-realm`（realm 是 sing-box 独有）、`http3`（mihomo 不支持 h3），以及缺 uuid / 密码 / SNI / Reality 公钥的残缺节点，生成时直接跳过——宁可少一条，也不给你一条点了没反应的。跳过了哪些会在文件末尾以注释列出，方便对照。
 
 ### 想要一个文件而不是一个地址：直接下载 Clash 配置
 
@@ -253,18 +287,18 @@ anytls://xxxx@125.24.53.19:20000  →  anytls://xxxx@13.26.52.13:30000
 
 所以物理上**做不到「所有客户端一个参数全搞定」**，只能各客户端出口各配一套。
 
-**默认的「自动」策略已经替你把这件事做了** —— 正常情况下导入后**直接能用，不用手动开任何开关**。
+**默认的「统一跳过校验」策略已经把该开的都开好了** —— 导入后**直接能用，不用手动开任何开关**。
 
-- 通用 / 标准链接出口 → 带 `allowInsecure=1&insecure=1`（小火箭、Hiddify 等直接认）
-- v2rayN 出口 → 带 `pcs`（**不能**给 v2rayN 发 `allowInsecure`，新版 Xray 会**直接拒绝启动**）
-- Clash / mihomo 出口 → 用证书指纹校验（比"跳过"更安全）
+- 通用 / 标准链接出口 → 带 `allowInsecure=1&insecure=1`（小火箭、Hiddify、Karing、NekoBox、v2rayA 直接认）
+- v2rayN 出口 → 带 `pcs`（**不能**给 v2rayN 发 `allowInsecure`，新版 Xray 会**直接拒绝启动**；pcs 是 Xray 官方的等价写法，同样零配置可用）
+- Clash / mihomo 出口 → 所有 TLS 节点都是 `skip-cert-verify: true`
 
 想自己控制？**主菜单 7（客户端设置）→ 6（证书放行策略）**：
 
 ```
-1. 自动（推荐）  各客户端开箱即用        ← 默认
-2. 指纹钉死 pcs  最安全；只用 v2rayN 时选它（小火箭需自己开）
-3. 统一跳过校验  最省事；只用小火箭/sing-box 系时选它（v2rayN 会启动失败）
+1. 统一跳过校验  客户端不用手动开任何开关   ← 默认
+2. 自动分派      标准链接用 pcs、小火箭用 allowInsecure，兼容最广
+3. 指纹钉死 pcs  最安全；只用 v2rayN / Xray 时选它（其它客户端需自己开）
 ```
 
 > 只改导出时内嵌的参数，**服务端配置不变**。改完客户端**重新拉一次订阅**即可生效。
@@ -295,7 +329,8 @@ v2rayN 的 `v2rayn://` 是私有格式，只有 v2rayN 认。脚本对小火箭�
 新版 Xray 移除了 `allowInsecure`。脚本对 Xray 系协议改用 `pcs=<证书指纹>`，对 sing-box 专属协议保留 `insecure=1`，两边都能直接用。
 
 **Q：为什么有的客户端导入后还要我自己去开「跳过证书验证 / 允许不安全」？**
-不是脚本漏了——客户端世界**没有统一的"跳过校验"参数**（详见上文「证书放行」）。默认的**「自动」策略**已替大多数客户端配好，**正常情况下不用手动开**。换了客户端生态想自己调：**主菜单 7 → 6（证书放行策略）**。
+**现在不需要了。** 默认策略是**「统一跳过校验」**：标准链接带 `allowInsecure=1&insecure=1`，Clash 全部 `skip-cert-verify: true`，v2rayN 用 `pcs`（Xray 官方等价写法）——四类客户端都是零配置可用。
+如果还是被要求手动开，多半是客户端缓存了旧订阅，重新拉一次即可；也可以去 **主菜单 7 → 6** 确认当前策略显示的是「统一跳过校验」。
 
 **Q：v2rayN 导入 Hysteria2 / TUIC 报错？**
 标准链接不携带内核信息，v2rayN 默认用 Xray。脚本对 sing-box 专属协议（Hysteria2 系 / TUIC / AnyTLS / NaiveProxy / ShadowTLS / HTTP2 / HTTP3）导出 `v2rayn://` 私有格式，显式锁定 sing-box 内核，导入后自动切换。
@@ -371,7 +406,44 @@ BusyBox 的 `date` 不支持 `%N`。已改用三级回退，`sb update` 升级�
 
 ## 更新日志
 
-### V3.9.11（当前版本）
+### V3.9.14（当前版本）
+- **修掉「SNI 优选测出了更快的域名，却说未成功、沿用默认值」**（Alpine 真机反馈）
+  - 现象：批量部署开场测速，前 12 个候选都有结果（最快 `swdist.apple.com` 25ms），末尾 `speed.cloudflare.com` / `www.speedtest.net` / `www.ookla.com` 连续超时 → 界面报「判定为本机 DNS 或出网异常，停止测速」「优选未成功，本批节点沿用 www.apple.com（31ms）」
+  - 根因：`sni_optimize()` 里连续 3 个失败直接 `return 1`，**把已累积的 `best` / `results` 全部丢弃**，缓存文件和 `SNI_OPTIMIZED` 都不写；调用方于是回落到硬编码兜底域名。V3.9.11 新增的 4 个国外测速站又恰好集中排在末尾、共用 Cloudflare/Fastly，容易一起超时，命中这个判定
+  - 连带问题：`SNI_OPTIMIZED` 为空时，`sni_maybe_optimize()` 的批量复用分支不生效，每个协议还会各自静默重测一遍，白白拖慢整批部署
+  - 修复：**「提前结束测速」与「本次优选失败」彻底解耦**——连续失败 / 30 秒预算只 `break`，之后照常走排序、写缓存、写 `PREFERRED_SNI`、设 `SNI_OPTIMIZED`；只有**零成功样本**才返回 1。连续失败阈值 3 → 5（真断网时前 5 个就全失败，仍被 30 秒预算兜住）。提前结束时提示「已用 N 个有效样本择优」并给出 DNS 排查建议，不再武断宣称本机出网异常
+  - 修好后的输出：打印按耗时排序的榜单 → `推荐 SNI：swdist.apple.com（25 ms）` → 本批所有协议共用该结果
+  - ⚠️ 这些测速站在部分 VPS 上确实连不上，每个仍会耗满 5 秒硬超时；**不影响择优结果**，只是这轮测速会多花约 20 秒
+
+### V3.9.13
+- **修掉「安装卡在 55% 下载 sing-box」**（Alpine 3.21 / OpenRC 真机反馈）
+  - 根因：下载 release 包的 `curl -fL --retry 3 ... 2>/dev/null` **没有 `--connect-timeout` / `--max-time`**，GitHub 连不上时 TCP 会一直等到内核超时；stderr 被完全吞掉，界面一行提示都没有；`--retry 3` × 3 个 libc 变体把等待放大到十几分钟
+  - 现在：`--connect-timeout 10 --max-time 120 --retry 1` + 外层 `run_with_timeout 150`（专治 Alpine 上 `getaddrinfo()` 阻塞时 curl 自身定时器不触发），下载前打印文件名，错误写入 `logs/singbox-download.log`
+  - 连不上 / DNS 失败 / TLS 失败 / 超时属于网络问题，**立刻停止**而不是继续拿同域名的其它变体做无意义重试；界面直接给出代理、镜像、手动安装三种出路
+  - GitHub API 的三处查询也补上连接超时和硬超时（原来只有 `--max-time`，DNS 卡死时管不住）
+  - 新增可选环境变量 `SINGBOX_DOWNLOAD_MIRROR`，被墙时挂镜像前缀即可，无需改脚本
+- 校验：两份脚本 `bash -n` 通过、非注释代码行一致、heredoc 逐字一致、纯 LF
+
+### V3.9.12
+- **Clash 分流规则大扩**：8 组 → **14 组**，规则集 31 → **115 个**，规则 33 → **117 条**
+  - 新增组：🤖 AI 服务 / 📱 社交媒体 / 🎮 游戏平台 / 🍎 苹果服务 / Ⓜ️ 微软服务 / 🛒 支付购物
+  - 布局对齐网上主流的 ACL4SSR 那套（节点选择 → 自动选择 → 各业务组 → 直连 / 拦截 → 漏网之鱼）
+  - 115 个规则集**逐个用 GitHub API 核对过文件真实存在**（一个 404 的 provider 会让 mihomo 加载报错，整份订阅白给）
+  - 精简模式同步扩容到 40 条 GEOSITE 规则，**组名与完整模式完全一致**，来回切不会错位
+- **所有协议默认允许跳过证书校验**（不用再去客户端手动开）
+  - Clash：全部 TLS 节点 `skip-cert-verify: true`，不再用「指纹钉死」——证书重签后指纹对不上会表现成「全部超时」
+  - 链接：默认策略从 `auto` 改成 **`统一跳过校验`**，标准链接带 `allowInsecure=1&insecure=1`
+  - v2rayN 出口仍强制 `pcs`（新版 Xray 不认 `allowInsecure`，带上会拒绝启动；pcs 是官方等价写法，同样零配置）
+  - sing-box JSON：包括 Argo 节点在内全部 `insecure: true`
+- **Clash 用不了的节点不再写进 YAML**
+  - `hy2-realm`：`realm://` 是 sing-box 独有，mihomo 没有对应字段，硬映射只会得到「能导入、连不上」的假节点
+  - `http3`：mihomo 的 http outbound 不支持 h3（`http2` 支持，已补上映射）
+  - 缺 uuid / 密码 / SNI / Reality 公钥的残缺节点也跳过
+  - 代理组的节点列表改为**跟着实际写入的节点走**（否则会报 `proxy group: xxx not found`，整份配置加载失败）
+  - 跳过了哪些，在文件末尾以注释列出
+- 顺带修掉一个老 bug：**密码里含 `"` 会把 flow mapping 提前闭合**，生成非法 YAML（原来只转义了节点名）
+
+### V3.9.11
 - **SNI 优选里的测速站全换成国外的**：原来那 4 个国内测速站（`m.speedtest.cn` / `test.nju.edu.cn` / `test.ustc.edu.cn` / `www.speedtest.cn`）全部移除，换成**国外 + 大陆可直连**的 4 个
   - `speed.cloudflare.com`（约 0.29s）、`www.speedtest.net`（约 0.46s）、`www.ookla.com`（约 0.68s）、`testmy.net`（约 0.78s）
   - 为什么要换：客户端在国内、VPS 在海外，SNI 指向国外站点才和「访问国外网站」的流量特征一致；指向国内站点反而让握手目标和实际出口对不上，更可疑
@@ -428,7 +500,7 @@ BusyBox 的 `date` 不支持 `%N`。已改用三级回退，`sb update` 升级�
   - **Token 隧道**：绑定自己的域名，域名固定、重启不变
   - 首次使用会问你要不要下载 cloudflared（约 20MB），装到脚本自己目录
 - 新节点类型 `vless-ws-argo`：inbound 只听 `127.0.0.1`、**不开 TLS**（TLS 由 CF 边缘终结），导出时 server 换成隧道域名、端口换成 443
-- Argo 节点**不套自签证书那套** pcs / allowInsecure —— CF 是正规证书，带上自己的指纹反而连不上
+- Argo 节点**不套自签证书那套** pcs / allowInsecure —— CF 是正规证书，带上自己的指纹反而连不上（V3.9.12 起按「全部默认跳过」统一成 `insecure: true`，同样不带指纹）
 - 只有 ws 类协议能套 Argo；Hysteria2 / TUIC 等 UDP 协议走不了（隧道只转 TCP/HTTP）
 
 ### V3.9.3
