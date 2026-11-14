@@ -73,12 +73,12 @@ CURRENT_SNAPSHOT=""; FINGERPRINT="chrome"; UOT_ENABLED="0"
 CLASH_RULE_MODE="full"
 PREFERRED_SNI=""; SNI_OPTIMIZED=""
 NODE_NAME_PREFIX=""
-SINGBOX_CHANNEL="any"
+SINGBOX_CHANNEL="${SINGBOX_CHANNEL:-any}"
 DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.15"
+VERSION="V3.9.16"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -1615,7 +1615,7 @@ ensure_http_version(){
     echo "  ${DIM}说明：HTTP/2 的显式声明、以及 HTTP/3（QUIC）都要靠 version 字段；${RESET}"
     echo "  ${DIM}它从 1.15.0-alpha.7 开始提供，官方正式版目前还停在 1.14.x。${RESET}"
     echo
-    echo "  1. 现在升级到最新内核（含 alpha/beta，推荐）"
+    echo "  1. 现在升级到最新内核（含 alpha/beta，推荐；会把默认频道改成「最新版」并写入 settings.env）"
     echo "  2. 继续，按兼容模式创建（省略 version，仅 HTTP/1.1 + HTTP/2）"
     echo "  0. 取消本次部署"
     read -r -p "  请选择 [1]： " _hv || _hv=""
@@ -7074,6 +7074,38 @@ uninstall(){
     exit 0
 }
 
+choose_install_channel(){
+    local _pre="${INSTALL_CHANNEL_PRESET:-${SINGBOX_CHANNEL:-any}}" _a="" _try=0 _ch=""
+    case "$_pre" in stable|pre) ;; *) _pre="any" ;; esac
+    echo
+    echo "  ${BOLD}选择 sing-box 内核版本${RESET}"
+    echo "    ${BOLD}1.${RESET} 最新版（含 alpha/beta）  ${GREEN}← 推荐，功能最全${RESET}"
+    echo "       ${DIM}HTTP/2 显式声明、HTTP/3 都要 1.15.0+，只有这条路装得到${RESET}"
+    echo "    ${BOLD}2.${RESET} 正式版（stable）           ${DIM}最稳，取官方 /latest${RESET}"
+    echo "       ${DIM}官方正式线目前停在 1.14.x，装它就用不了 HTTP/3${RESET}"
+    echo
+    while [ "$_try" -lt 3 ]; do
+        if [ "$_pre" = "stable" ]; then
+            read -r -p "  请选择 [2]： " _a || _a=""
+            _a="${_a:-2}"
+        else
+            read -r -p "  请选择 [1]： " _a || _a=""
+            _a="${_a:-1}"
+        fi
+        case "$_a" in
+            1|any|latest|"") _ch="any"; break ;;
+            2|stable)        _ch="stable"; break ;;
+            *) warn "请输入 1 或 2"; _try=$((_try + 1)) ;;
+        esac
+    done
+    [ -n "$_ch" ] || { _ch="$_pre"; warn "三次输入无效，沿用预置频道 $_ch"; }
+    INSTALL_CHANNEL_CHOICE="$_ch"
+    if [ "$_ch" = "stable" ]; then
+        echo "  ${DIM}→ 已选择：${RESET}${GREEN}正式版（stable）${RESET}"
+    else
+        echo "  ${DIM}→ 已选择：${RESET}${GREEN}最新版（含 alpha/beta）${RESET}"
+    fi
+}
 confirm_install(){
     echo
     panel "安装确认"
@@ -7087,6 +7119,8 @@ confirm_install(){
     echo "  ${DIM}安装过程会自动补装所需依赖（curl / jq / openssl 等）。${RESET}"
     echo "  ${DIM}订阅服务默认不开 —— 装好后需要时再到菜单里自行选择并启动。${RESET}"
     echo
+    choose_install_channel
+    echo
     read -r -p "  确认安装？[Y/n] " a || a=""
     case "${a:-Y}" in
         y|Y|yes|YES|"") return 0 ;;
@@ -7095,6 +7129,7 @@ confirm_install(){
 }
 initial_install(){
     need_root
+    INSTALL_CHANNEL_PRESET="${SINGBOX_CHANNEL:-}"
     progress 5 "检测系统环境"
     detect_os
     detect_arch
@@ -7104,6 +7139,10 @@ initial_install(){
     progress 30 "创建目录与默认配置"
     mkdir -p "$BASE" "$CERTDIR" "$SUBDIR" "$BACKUP" "$LOGDIR"
     load_settings
+    if [ -n "${INSTALL_CHANNEL_CHOICE:-}" ]; then
+        SINGBOX_CHANNEL="$INSTALL_CHANNEL_CHOICE"
+        SINGBOX_WANT_VERSION=""
+    fi
     save_settings
     init_files
     progress 45 "识别服务器地理位置"
@@ -7279,7 +7318,7 @@ download_singbox(){
             url="$(printf '%s' "$rel" | cut -f2)"
         fi
     fi
-    if [ -z "${url:-}" ] && [ -n "$DEFAULT_NEWEST_VERSION" ]; then
+    if [ -z "${url:-}" ] && [ -n "$DEFAULT_NEWEST_VERSION" ] && [ "${SINGBOX_CHANNEL:-any}" != "stable" ]; then
         warn "无法从 release 列表择优，改用内置已知最新版 v${DEFAULT_NEWEST_VERSION}"
         rel="$(fetch_singbox_version "$DEFAULT_NEWEST_VERSION")"
         if [ -n "$rel" ]; then
@@ -7288,7 +7327,11 @@ download_singbox(){
         fi
     fi
     if [ -z "${url:-}" ]; then
-        warn "仍在尝试 GitHub 官方 latest（仅正式版）"
+        if [ "${SINGBOX_CHANNEL:-any}" = "stable" ]; then
+            info "正在查询官方最新正式版（/releases/latest，仅正式版）..."
+        else
+            warn "仍在尝试 GitHub 官方 latest（仅正式版）"
+        fi
         api="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
         json="$(run_with_timeout 35 curl -fsSL --connect-timeout 8 --max-time 30 "$api")" || { warn "无法访问 GitHub API"; return 1; }
         tag="$(jq -r '.tag_name // empty' <<<"$json")"
