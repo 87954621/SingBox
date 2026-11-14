@@ -78,7 +78,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.14"
+VERSION="V3.9.15"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -977,6 +977,12 @@ SNI_CANDIDATES=(
     "www.bing.com"
     "www.cloudflare.com"
     "time.is"
+    "player.live-video.net"
+    "live.bilibili.com"
+    "www.huya.com"
+    "www.douyu.com"
+    "live.douyin.com"
+    "live.kuaishou.com"
     "speed.cloudflare.com"
     "www.speedtest.net"
     "www.ookla.com"
@@ -1009,10 +1015,10 @@ sni_optimize(){
     local fail_streak=0 _early=0 _early_why=""
     local _t0="$SECONDS" _budget_stop=0
     for d in "${SNI_CANDIDATES[@]}"; do
-        if [ $(( SECONDS - _t0 )) -ge 30 ]; then
+        if [ $(( SECONDS - _t0 )) -ge 45 ]; then
             echo
-            warn "测速已进行 30 秒仍未测完，提前结束（本机到候选域名的网络可能异常）"
-            _budget_stop=1; _early=1; _early_why="测速达到 30 秒上限"
+            warn "测速已进行 45 秒仍未测完，提前结束（本机到候选域名的网络可能异常）"
+            _budget_stop=1; _early=1; _early_why="测速达到 45 秒上限"
             break
         fi
         printf '  %-26s' "$d"
