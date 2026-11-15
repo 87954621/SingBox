@@ -841,8 +841,8 @@ SUBHTTP_ALLOW_IPS=$SUBHTTP_ALLOW_IPS
 SUBHTTP_BACKEND=$SUBHTTP_BACKEND
 ADVERTISE_IP=$ADVERTISE_IP
 ADVERTISE_PORT_BASE=$ADVERTISE_PORT_BASE
-LOW_MEM_MODE=$LOW_MEM_MODE
-GO_MEM_LIMIT_MB=$GO_MEM_LIMIT_MB
+LOW_MEM_MODE=${LOW_MEM_MODE:-0}
+GO_MEM_LIMIT_MB=${GO_MEM_LIMIT_MB:-}
 EOF
 }
 valid_port(){ [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
@@ -2013,8 +2013,28 @@ lowmem_set_loglevel(){
     ok "已把 config.json 的日志级别设为 warn（重启后生效）"
     return 0
 }
+lowmem_ensure_unit(){
+    [ -x "$BIN" ] || return 0
+    local f=""
+    case "${INIT:-none}" in
+      systemd)
+        f="/etc/systemd/system/sing-box.service"
+        if [ -f "$f" ] && ! grep -q 'go-env' "$f" 2>/dev/null; then
+            info "检测到旧版服务单元，重写以接入低内存模式 ..."
+            install_service >/dev/null 2>&1 || warn "重写服务单元失败，可到主菜单 14 自检 / 修复"
+        fi ;;
+      openrc)
+        f="/etc/init.d/sing-box"
+        if [ -f "$f" ] && ! grep -q 'go-env' "$f" 2>/dev/null; then
+            info "检测到旧版 OpenRC 服务脚本，重写以接入低内存模式 ..."
+            install_service >/dev/null 2>&1 || warn "重写服务脚本失败，可到主菜单 14 自检 / 修复"
+        fi ;;
+    esac
+    return 0
+}
 lowmem_restart(){
     write_go_env || true
+    lowmem_ensure_unit
     if service_alive; then
         info "重启 sing-box 使新设置生效 ..."
         apply || warn "sing-box 重启失败（配置可能有误，未强行覆盖）"
@@ -2030,6 +2050,7 @@ lowmem_apply(){
     local lim
     lim="$(_go_mem_limit)"
     if ! write_go_env; then warn "写 ${BASE}/go-env 失败，设置未生效"; return 1; fi
+    lowmem_ensure_unit
     if [ -n "$lim" ]; then ok "低内存模式已开启：Go 堆软上限 ${lim}MiB"
     else ok "低内存模式已关闭：不限制 Go 堆"; fi
     echo "    环境变量写在 ${BASE}/go-env，服务每次启动都会重读。"
