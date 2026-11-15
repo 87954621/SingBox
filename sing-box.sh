@@ -78,11 +78,13 @@ SINGBOX_CHANNEL="${SINGBOX_CHANNEL:-any}"
 INSTALL_SOURCE="${INSTALL_SOURCE:-github}"
 INSTALL_CHANNEL_CHOICE=""; INSTALL_CHANNEL_PRESET=""; INSTALL_SOURCE_CHOICE=""
 APK_PKG_VER=""; APK_PKG_VER_CHECKED=0
+APK_USE_EDGE="${APK_USE_EDGE:-0}"; APK_EDGE_CHOICE=""
+APK_EDGE_REPO="https://dl-cdn.alpinelinux.org/alpine/edge/community"
 DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.19"
+VERSION="V3.9.20"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -412,43 +414,54 @@ libc_kind(){
     printf ''
 }
 
-install_deps(){
+_have_ca_bundle(){
+    [ -s /etc/ssl/certs/ca-certificates.crt ] || [ -s /etc/ssl/cert.pem ] || \
+    [ -s /etc/pki/tls/certs/ca-bundle.crt ]   || [ -s /etc/ssl/certs/ca-bundle.crt ]
+}
+_dep_pkg_name(){
+    printf '%s' "$1"
+}
+core_deps_missing(){
+    local d out=""
+    for d in curl jq openssl tar gzip; do
+        command -v "$d" >/dev/null 2>&1 || out="$out $(_dep_pkg_name "$d")"
+    done
+    _have_ca_bundle || out="$out ca-certificates"
+    printf '%s' "${out# }"
+}
+_pkg_install_core(){
+    local _pkgs="$1"
+    [ -n "$_pkgs" ] || return 0
     case "$OS" in
       debian|ubuntu|armbian)
         apt-get update -y >/dev/null 2>&1 || true
-        apt-get install -y curl ca-certificates jq openssl tar gzip iproute2 procps dnsutils >/dev/null 2>&1 || true ;;
+        DEBIAN_FRONTEND=noninteractive apt-get install -y $_pkgs >/dev/null 2>&1 ;;
       alpine)
-        apk add --no-cache curl ca-certificates jq openssl tar gzip iproute2 procps bind-tools >/dev/null 2>&1 || true ;;
+        apk add --no-cache $_pkgs >/dev/null 2>&1 ;;
       arch|manjaro)
-        pacman -Sy --noconfirm curl ca-certificates jq openssl tar gzip iproute2 procps-ng bind >/dev/null 2>&1 || true ;;
+        pacman -Sy --noconfirm $_pkgs >/dev/null 2>&1 ;;
       centos|rhel|rocky|almalinux|fedora)
-        (dnf install -y curl ca-certificates jq openssl tar gzip iproute procps-ng bind-utils >/dev/null 2>&1) ||
-        (yum install -y curl ca-certificates jq openssl tar gzip iproute procps bind-utils >/dev/null 2>&1) || true ;;
+        if command -v dnf >/dev/null 2>&1; then dnf install -y $_pkgs >/dev/null 2>&1
+        else yum install -y $_pkgs >/dev/null 2>&1; fi ;;
+      *) return 1 ;;
     esac
-    command -v curl >/dev/null || die "curl 安装失败"
-    command -v jq >/dev/null || die "jq 安装失败"
-    command -v openssl >/dev/null || die "openssl 安装失败"
-    command -v ss >/dev/null 2>&1 || warn "未找到 ss（iproute2），端口占用检测将不可用"
-    install_qrencode
 }
-
-install_qrencode(){
-    command -v qrencode >/dev/null 2>&1 && return 0
-    info "安装二维码工具 qrencode ..."
-    case "$OS" in
-      debian|ubuntu|armbian) apt-get install -y qrencode >/dev/null 2>&1 || true ;;
-      alpine)                apk add --no-cache libqrencode-tools >/dev/null 2>&1 || \
-                             apk add --no-cache qrencode >/dev/null 2>&1 || true ;;
-      arch|manjaro)          pacman -Sy --noconfirm qrencode >/dev/null 2>&1 || true ;;
-      centos|rhel|rocky|almalinux|fedora)
-                             (dnf install -y qrencode >/dev/null 2>&1) || \
-                             (yum install -y qrencode >/dev/null 2>&1) || true ;;
-    esac
-    if command -v qrencode >/dev/null 2>&1; then
-        ok "qrencode 安装成功"
-    else
-        warn "qrencode 安装失败，二维码功能将不可用（其余功能不受影响）"
+install_deps(){
+    local _pkgs="" _d
+    _pkgs="$(core_deps_missing)"
+    if [ -z "$_pkgs" ]; then
+        ok "必需依赖齐全，本次不安装任何系统包"
+        return 0
     fi
+    info "本次只需补装必需依赖：$_pkgs"
+    echo "  ${DIM}二维码 / dig / ss 等可选依赖不在开局安装：用到时会先问你 y/N。${RESET}"
+    run_with_timeout 300 _pkg_install_core "$_pkgs" >/dev/null 2>&1 || true
+    for _d in curl jq openssl tar gzip; do
+        command -v "$_d" >/dev/null 2>&1 || \
+            die "必需依赖 $_d 缺失且自动安装失败；请手动安装后重跑：Debian apt install -y $_pkgs / Alpine apk add $_pkgs"
+    done
+    _have_ca_bundle || warn "未找到 CA 根证书，HTTPS 下载可能失败（可手动安装 ca-certificates）"
+    ok "必需依赖就绪"
 }
 
 get_ip(){
@@ -809,6 +822,10 @@ load_settings(){
         github|apk) INSTALL_SOURCE="$INSTALL_SOURCE" ;;
         *) INSTALL_SOURCE="github" ;;
     esac
+    case "${APK_USE_EDGE:-0}" in
+        0|1) APK_USE_EDGE="$APK_USE_EDGE" ;;
+        *)   APK_USE_EDGE=0 ;;
+    esac
     DEFAULT_NEWEST_VERSION="${DEFAULT_NEWEST_VERSION:-1.15.0-alpha.9}"
     SINGBOX_WANT_VERSION="${SINGBOX_WANT_VERSION:-}"
     SUBHTTP_ENABLED="${SUBHTTP_ENABLED:-0}"
@@ -842,6 +859,7 @@ NODE_NAME_PREFIX=$NODE_NAME_PREFIX
 SINGBOX_CHANNEL=$SINGBOX_CHANNEL
 SINGBOX_WANT_VERSION=$SINGBOX_WANT_VERSION
 INSTALL_SOURCE=$INSTALL_SOURCE
+APK_USE_EDGE=${APK_USE_EDGE:-0}
 DEFAULT_NEWEST_VERSION=$DEFAULT_NEWEST_VERSION
 SUBHTTP_ENABLED=$SUBHTTP_ENABLED
 SUBHTTP_LISTEN=$SUBHTTP_LISTEN
@@ -855,11 +873,21 @@ EOF
 }
 valid_port(){ [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
 port_used(){
-    local p="$1"
-    if ! command -v ss >/dev/null 2>&1; then
+    local p="$1" hex f
+    if command -v ss >/dev/null 2>&1; then
+        ss -lntupH 2>/dev/null | awk '{print $5}' | grep -Eq "([.:])${p}$" && return 0
         return 1
     fi
-    ss -lntupH 2>/dev/null | awk '{print $5}' | grep -Eq "([.:])${p}$"
+    hex="$(printf '%04X' "$p" 2>/dev/null)" || return 1
+    [ -n "$hex" ] || return 1
+    for f in /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6; do
+        [ -r "$f" ] || continue
+        awk -v h="$hex" '
+            FNR>1 { split($2,a,":"); if (toupper(a[2])==h && ($4=="0A" || $4=="07")) { found=1; exit } }
+            END { exit(found ? 0 : 1) }
+        ' "$f" && return 0
+    done
+    return 1
 }
 port_in_config(){
     local p="$1"
@@ -2278,6 +2306,12 @@ upgrade_singbox(){
             _want_ch="" ;;
         5)
             _apk_available || { warn "选项 5 仅 Alpine 可用"; pause; return 1; }
+            if [ "${APK_USE_EDGE:-0}" != "1" ] && [ -z "$(_apk_pkg_version_cached 2>/dev/null)" ]; then
+                warn "本机稳定软件源里查不到 sing-box，直接切换会失败"
+                echo  "    重装时在确认屏选 4 可临时用 Alpine Edge 源，或自行加 edge/community 源后再来"
+                echo  "    也可以继续选 1~4 用 GitHub 官方二进制"
+                pause; return 1
+            fi
             echo
             warn "系统包版由软件源决定版本（通常明显落后），装不了 HTTP/3"
             read -r -p "  确认切换？输入 y 继续 / n 取消： " _sw || _sw=""
@@ -2664,9 +2698,55 @@ goto_sub(){
 
 have_qrencode(){ command -v qrencode >/dev/null 2>&1; }
 
+QRCODE_ASKED="${QRCODE_ASKED:-0}"
+_pkg_install_qrencode(){
+    case "$OS" in
+      debian|ubuntu|armbian)
+        DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode >/dev/null 2>&1 ;;
+      alpine)
+        apk add --no-cache libqrencode-tools >/dev/null 2>&1 || \
+        apk add --no-cache qrencode >/dev/null 2>&1 ;;
+      arch|manjaro)
+        pacman -Sy --noconfirm qrencode >/dev/null 2>&1 ;;
+      centos|rhel|rocky|almalinux|fedora)
+        if command -v dnf >/dev/null 2>&1; then dnf install -y qrencode >/dev/null 2>&1
+        else yum install -y qrencode >/dev/null 2>&1; fi ;;
+      *) return 1 ;;
+    esac
+}
+ensure_qrencode(){
+    have_qrencode && return 0
+    if [ "$QRCODE_ASKED" = "1" ]; then
+        warn "本次已选择跳过安装 qrencode；需要时到二维码菜单选 3 重新安装"
+        return 1
+    fi
+    QRCODE_ASKED=1
+    echo
+    echo "  ${BOLD}显示二维码需要额外装一个工具 qrencode（几百 KB）。${RESET}"
+    echo "  ${DIM}不装也能用：链接会以文本原样打印，手动复制即可。${RESET}"
+    local _v=""
+    if ! _ask "  现在安装 qrencode？输入 y 安装 / n 跳过： "; then
+        warn "读不到选择，已跳过安装（二维码不可用）"
+        return 1
+    fi
+    _v="$_ASK_VALUE"
+    case "$_v" in
+        y|Y|yes|YES) ;;
+        *) info "已跳过安装；二维码功能不可用，链接仍可复制"; return 1 ;;
+    esac
+    info "安装二维码工具 qrencode ..."
+    run_with_timeout 180 _pkg_install_qrencode >/dev/null 2>&1 || true
+    if have_qrencode; then ok "qrencode 安装成功"; return 0; fi
+    warn "qrencode 安装失败（软件源没有该包 / 网络不可达），二维码功能不可用"
+    return 1
+}
+
 qr_terminal(){
     local data="$1"
-    have_qrencode || { warn "未安装 qrencode，无法显示二维码"; return 1; }
+    if ! have_qrencode; then
+        [ "${QRCODE_ASKED:-0}" = "1" ] && return 1
+        ensure_qrencode || { warn "二维码功能不可用，上面的链接可直接复制"; return 1; }
+    fi
     local cols
     cols="$(tput cols 2>/dev/null || echo 80)"
     if [ "$cols" -lt 125 ]; then
@@ -4747,7 +4827,7 @@ sub_choose_backend(){
                     case "$y" in
                         [Yy]*)
                             info "正在安装 nginx…"
-                            if nginx_install; then
+                            if run_with_timeout 300 nginx_install >/dev/null 2>&1; then
                                 ok "nginx 安装完成"
                                 SUBHTTP_BACKEND=nginx
                             else
@@ -7023,8 +7103,14 @@ clash_sub_menu(){
 qr_menu(){
   while :; do
     echo
+    if have_qrencode; then
+        echo "  ${DIM}二维码工具：已安装${RESET}"
+    else
+        echo "  ${DIM}二维码工具：未安装（选 3 按需安装；不装也能复制文本链接）${RESET}"
+    fi
     echo "1. 单个节点"
     echo "2. 全部节点"
+    echo "3. 安装二维码工具（qrencode）"
     echo "0. 返回"
     read -r -p "请选择： " q || q=""
     case "$q" in
@@ -7037,6 +7123,10 @@ qr_menu(){
         [ "$idx" -ge 0 ] && [ "$idx" -lt "$count" ] || { warn "节点编号不存在"; pause; continue; }
         show_qr_for_node "$idx"; pause ;;
       2) show_qr_all; pause ;;
+      3)
+        QRCODE_ASKED=0
+        if ensure_qrencode; then ok "二维码工具已就绪"; else warn "未安装，二维码功能仍不可用"; fi
+        pause ;;
       0) return ;;
       *) warn "无效"; sleep 1 ;;
     esac
@@ -7405,10 +7495,15 @@ _ask(){
 choose_install_channel(){
     local _pre="${INSTALL_CHANNEL_PRESET:-${SINGBOX_CHANNEL:-any}}" _a="" _try=0 _ch=""
     local _def="" _prompt="" _label="" _apk_ver="" _apk_ok=0 _range="1 或 2"
+    local _edge_ok=0 _edge_ver="" _edge_confirm=0
     case "$_pre" in stable|pre) ;; *) _pre="any" ;; esac
+    APK_EDGE_CHOICE=""
     if _apk_available; then
-        _apk_ok=1; _range="1、2 或 3"
         _apk_ver="$(_apk_pkg_version_cached)"
+        if [ -n "$_apk_ver" ]; then _apk_ok=1; _range="1、2 或 3"; fi
+    fi
+    if _apk_available && [ "$_apk_ok" = "0" ]; then
+        _edge_ok=1; _range="1、2 或 4"
     fi
     echo "  ${BOLD}选择 sing-box 内核${RESET}"
     echo "    ${BOLD}1.${RESET} 最新版（含 alpha/beta，GitHub）  ${GREEN}← 推荐，功能最全${RESET}"
@@ -7416,15 +7511,20 @@ choose_install_channel(){
     echo "    ${BOLD}2.${RESET} 正式版（stable，GitHub）       ${DIM}最稳，取官方 /latest${RESET}"
     echo "       ${DIM}官方正式线目前停在 1.14.x，装它就用不了 HTTP/3${RESET}"
     if [ "$_apk_ok" = "1" ]; then
-        if [ -n "$_apk_ver" ]; then
-            echo "    ${BOLD}3.${RESET} Alpine 系统包版（apk 源：${GREEN}${_apk_ver}${RESET}）"
-        else
-            echo "    ${BOLD}3.${RESET} Alpine 系统包版（apk 源版本未查到，安装时取仓库最新）"
-            echo "       ${YELLOW}注意：稳定分支的仓库通常没有 sing-box（需 edge/community 源），选它可能装不上${RESET}"
-        fi
+        echo "    ${BOLD}3.${RESET} Alpine 系统包版（apk 源：${GREEN}${_apk_ver}${RESET}）"
         echo "       ${DIM}走 Alpine CDN，不碰 GitHub；版本较旧，用不了 HTTP/3${RESET}"
         [ -x /usr/bin/sing-box ] && \
             echo "  ${DIM}检测到系统已装 apk 包版 sing-box，选 3 会直接接管它。${RESET}"
+    elif _apk_available; then
+        echo "  ${YELLOW}Alpine 系统包版（选项 3）本次不可用：稳定软件源里查不到 sing-box。${RESET}"
+        echo "  ${DIM}  自查：apk update && apk search -x sing-box${RESET}"
+        echo "  ${DIM}  想用 apk 包可选 4（临时 Edge 源，需二次确认）；否则选 1 或 2 走 GitHub 官方二进制。${RESET}"
+        echo "  ${DIM}  脚本不会擅自修改 /etc/apk/repositories。${RESET}"
+    fi
+    if [ "$_edge_ok" = "1" ]; then
+        echo "    ${BOLD}4.${RESET} 临时用 Alpine Edge 源安装（不改系统软件源）"
+        echo "       ${YELLOW}⚠ edge 是滚动开发分支，与稳定版系统混用依赖有兼容风险，需二次确认${RESET}"
+        echo "       ${DIM}稳定源没有 sing-box 时的备用路；也可直接选 1 走官方二进制${RESET}"
     fi
     echo "  ${DIM}必须输入 $_range 后回车；只按回车 / 空输入不算选择。${RESET}"
     echo
@@ -7434,7 +7534,7 @@ choose_install_channel(){
         if ! _ask "$_prompt"; then
             if [ "${SB_ASSUME_DEFAULTS:-0}" = "1" ]; then
                 _ch="${INSTALL_CHANNEL_PRESET:-$_pre}"
-                INSTALL_SOURCE_CHOICE="github"
+                INSTALL_SOURCE_CHOICE="github"; APK_EDGE_CHOICE=0
                 echo
                 warn "无人值守模式：读不到交互输入，内核采用 $_ch（GitHub 官方二进制）"
                 break
@@ -7450,11 +7550,47 @@ choose_install_channel(){
         fi
         _a="$_ASK_VALUE"
         case "$_a" in
-            1|any|latest) _ch="any"; break ;;
-            2|stable)     _ch="stable"; break ;;
+            1|any|latest) _ch="any"; APK_EDGE_CHOICE=0; break ;;
+            2|stable)     _ch="stable"; APK_EDGE_CHOICE=0; break ;;
             3|apk|system)
-                if [ "$_apk_ok" = "1" ]; then _ch="apk"; break; fi
-                warn "选项 3 仅 Alpine 可用，请输入 1 或 2"; _try=$((_try + 1)) ;;
+                if [ "$_apk_ok" = "1" ]; then _ch="apk"; APK_EDGE_CHOICE=0; break; fi
+                if _apk_available; then
+                    warn "本机稳定软件源里查不到 sing-box，选项 3 当前不可用"
+                    echo  "    自查：apk update && apk search -x sing-box"
+                    echo  "    想用 apk 包请选 4（临时 Edge 源，需二次确认），或选 1 / 2 走官方二进制"
+                else
+                    warn "选项 3 仅 Alpine 可用"
+                fi
+                warn "请输入 $_range"; _try=$((_try + 1)) ;;
+            4|edge|apk-edge)
+                if [ "$_edge_ok" != "1" ]; then
+                    warn "选项 4 当前不可用（仅 Alpine 且稳定源没有 sing-box 时提供）"
+                    _try=$((_try + 1))
+                else
+                    echo
+                    warn "选项 4 会临时从 Alpine Edge 社区源安装 sing-box（不改 /etc/apk/repositories）"
+                    echo  "    ⚠ edge 是滚动开发分支，与稳定版系统混用依赖有兼容风险；"
+                    echo  "      小内存机器还可能被拉入额外依赖。仅在确实需要 apk 包时选。"
+                    _edge_confirm=0
+                    if _ask "  确认临时使用 Edge 源？输入 y 继续 / n 返回重选： "; then
+                        case "$_ASK_VALUE" in y|Y|yes|YES) _edge_confirm=1 ;; esac
+                    else
+                        warn "读不到确认，已放弃选项 4"
+                    fi
+                    if [ "$_edge_confirm" = "1" ]; then
+                        info "正在探测 Edge 源里是否有 sing-box ..."
+                        _edge_ver="$(_apk_edge_pkg_version 2>/dev/null)" || _edge_ver=""
+                        if [ -n "$_edge_ver" ]; then
+                            ok "Edge 源可用（sing-box $_edge_ver）"
+                            _ch="apk"; APK_EDGE_CHOICE=1; break
+                        fi
+                        warn "Edge 源探测失败（源不可达 / 没有 sing-box 包 / 超时），选项 4 本次不可用"
+                        echo  "    请改选 1 或 2 走 GitHub 官方二进制"
+                    else
+                        info "已取消选项 4，请重新选择"
+                    fi
+                    _try=$((_try + 1))
+                fi ;;
             '')
                 warn "只收到空输入（可能只是按了回车），请明确输入 $_range"
                 _try=$((_try + 1)) ;;
@@ -7463,7 +7599,7 @@ choose_install_channel(){
     done
     [ -n "$_ch" ] || {
         if [ "${SB_ASSUME_DEFAULTS:-0}" = "1" ]; then
-            _ch="$_pre"; INSTALL_SOURCE_CHOICE="github"; warn "无人值守：沿用预置频道 $_ch"
+            _ch="$_pre"; INSTALL_SOURCE_CHOICE="github"; APK_EDGE_CHOICE=0; warn "无人值守：沿用预置频道 $_ch"
         else
             echo
             warn "没有取得有效的内核选择，安装已停止（未做任何改动）"
@@ -7475,10 +7611,12 @@ choose_install_channel(){
     if [ "$_ch" = "apk" ]; then
         INSTALL_CHANNEL_CHOICE=""
         INSTALL_SOURCE_CHOICE="apk"
-        _label="Alpine 系统包版（apk）"
+        if [ "${APK_EDGE_CHOICE:-0}" = "1" ]; then _label="Alpine Edge 源（系统包版，临时）"
+        else _label="Alpine 系统包版（apk）"; fi
     else
         INSTALL_CHANNEL_CHOICE="$_ch"
         INSTALL_SOURCE_CHOICE="github"
+        APK_EDGE_CHOICE=0
         if [ "$_ch" = "stable" ]; then _label="正式版（stable）"
         else _label="最新版（含 alpha/beta）"; fi
     fi
@@ -7486,7 +7624,7 @@ choose_install_channel(){
     return 0
 }
 confirm_install(){
-    local _cl="" _mt0=""
+    local _cl="" _mt0="" _need=""
     echo
     panel "安装确认"
     echo "  即将在本机安装 Sing-box NAT ${BOLD}${VERSION}${RESET}："
@@ -7504,12 +7642,20 @@ confirm_install(){
         fi
     fi
     echo
-    echo "  ${DIM}安装过程会自动补装所需依赖（curl / jq / openssl 等）。${RESET}"
+    _need="$(core_deps_missing 2>/dev/null)"
+    if [ -n "$_need" ]; then
+        echo "  ${DIM}本次需补装的必需依赖：${_need}${RESET}"
+    else
+        echo "  ${DIM}必需依赖已齐全，本次不安装系统包。${RESET}"
+    fi
+    echo "  ${DIM}可选依赖（二维码 qrencode / dig / ss 等）不自动安装：用到时才问你 y/N。${RESET}"
     echo "  ${DIM}订阅服务默认不开 —— 装好后需要时再到菜单里自行选择并启动。${RESET}"
     echo
     choose_install_channel || return 1
     echo
-    if [ "${INSTALL_SOURCE_CHOICE:-}" = "apk" ]; then _cl="Alpine 系统包版（apk）"
+    if [ "${INSTALL_SOURCE_CHOICE:-}" = "apk" ]; then
+        if [ "${APK_EDGE_CHOICE:-0}" = "1" ]; then _cl="Alpine Edge 源（系统包版，临时）"
+        else _cl="Alpine 系统包版（apk）"; fi
     elif [ "$INSTALL_CHANNEL_CHOICE" = "stable" ]; then _cl="正式版（stable）"
     else _cl="最新版（含 alpha/beta）"; fi
     local _ok=0 _n=0 _v
@@ -7558,6 +7704,9 @@ initial_install(){
     fi
     if [ -n "${INSTALL_SOURCE_CHOICE:-}" ]; then
         INSTALL_SOURCE="$INSTALL_SOURCE_CHOICE"
+    fi
+    if [ -n "${APK_EDGE_CHOICE:-}" ]; then
+        APK_USE_EDGE="$APK_EDGE_CHOICE"
     fi
     if [ "$_fresh" = "1" ]; then
         _mt1="$(_sys_mem_total_mb)"
@@ -7716,6 +7865,19 @@ _apk_pkg_version_cached(){
     fi
     printf '%s' "${APK_PKG_VER:-}"
 }
+_apk_edge_pkg_version(){
+    _apk_available || return 1
+    local out="" v=""
+    out="$(run_with_timeout 45 apk search -x -X "$APK_EDGE_REPO" sing-box 2>/dev/null)" || out=""
+    v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
+    if [ -z "$v" ]; then
+        run_with_timeout 45 apk update -X "$APK_EDGE_REPO" >/dev/null 2>&1 || true
+        out="$(run_with_timeout 20 apk search -x -X "$APK_EDGE_REPO" sing-box 2>/dev/null)" || out=""
+        v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
+    fi
+    [ -n "$v" ] || return 1
+    printf '%s\n' "$v"
+}
 _apk_init_backup(){
     [ "${INIT:-none}" = openrc ] || return 0
     [ -f /etc/init.d/sing-box ] || return 0
@@ -7734,11 +7896,23 @@ install_singbox_from_apk(){
     local _log="${LOGDIR:-/tmp}/apk-install.log" _sysbin="" _ver=""
     info "正在从 Alpine 软件源安装 sing-box（不访问 GitHub）..."
     : > "$_log" 2>/dev/null || _log="/tmp/singbox-nat-apk.log"
-    if ! run_with_timeout 180 apk add --no-cache sing-box >"$_log" 2>&1; then
-        warn "apk 安装 sing-box 失败（软件源里没有该包 / 网络不可达 / 索引过期）"
-        echo  "    可自查：apk update && apk search sing-box"
-        echo  "    安装日志：$_log"
-        return 1
+    if [ "${APK_USE_EDGE:-0}" = "1" ]; then
+        warn "本次临时使用 Alpine Edge 社区源（$APK_EDGE_REPO），不会修改系统软件源"
+        echo  "    edge 包可能与稳定版系统混用依赖；如遇异常可在「sing-box 管理 → 2」换回官方二进制"
+        if ! run_with_timeout 240 apk add --no-cache --repository="$APK_EDGE_REPO" sing-box >"$_log" 2>&1; then
+            warn "从 Alpine edge/community 安装 sing-box 失败（源不可达 / 索引过期 / 依赖冲突）"
+            echo  "    可自查：apk search -x -X $APK_EDGE_REPO sing-box"
+            echo  "    安装日志：$_log"
+            return 1
+        fi
+    else
+        if ! run_with_timeout 180 apk add --no-cache sing-box >"$_log" 2>&1; then
+            warn "apk 安装 sing-box 失败（软件源里没有该包 / 网络不可达 / 索引过期）"
+            echo  "    可自查：apk update && apk search -x sing-box"
+            echo  "    稳定分支通常不含此包；重装时可选「临时 Edge 源」或改选 GitHub 官方二进制"
+            echo  "    安装日志：$_log"
+            return 1
+        fi
     fi
     if [ -x /usr/bin/sing-box ]; then
         _sysbin=/usr/bin/sing-box
@@ -7760,7 +7934,8 @@ install_singbox_from_apk(){
 }
 _channel_label(){
     if [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
-        printf 'Alpine 软件源（系统包版）\n'
+        if [ "${APK_USE_EDGE:-0}" = "1" ]; then printf 'Alpine Edge 源（系统包版）\n'
+        else printf 'Alpine 软件源（系统包版）\n'; fi
         return 0
     fi
     case "${SINGBOX_CHANNEL:-any}" in

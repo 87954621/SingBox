@@ -2,7 +2,7 @@
 
 一个 Bash 单文件脚本，在 Linux 上一键部署和管理 **16 种 sing-box 协议**，自带中文菜单、节点管理、订阅链接和 Argo 隧道。支持 Debian / Ubuntu / CentOS / Alpine / Arch，systemd / OpenRC / 无 init 都能跑，**NAT 小鸡没有公网端口也能用**。
 
-**V3.9.19**
+**V3.9.20**
 
 ---
 
@@ -16,7 +16,7 @@ wget -qO sb.sh https://raw.githubusercontent.com/87954621/SingBox/refs/heads/mai
 curl -fsSL https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh -o sing-box.sh && bash sing-box.sh
 ```
 
-> ⚠️ **别用 `wget -qO- URL | bash`**：安装过程要问你两个问题，管道会把脚本内容当成答案吞掉。两道提问都必须真正输入内容，只按回车不算选择；三次无效会停止安装，不改动系统。
+> ⚠️ **别用 `wget -qO- URL | bash`**：安装过程要问你选内核、确认安装（选了选项 4 还会多问一次），管道会把脚本内容当成答案吞掉。每道提问都必须真正输入内容，只按回车不算选择；三次无效会停止安装，不改动系统。
 
 安装确认屏会让你选内核：
 
@@ -24,9 +24,16 @@ curl -fsSL https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/si
 |---|---|---|
 | **1** 最新版（含 alpha/beta） | GitHub 最新 tag，目前 1.15.0-alpha/beta | **推荐**，16 协议全开（含 HTTP/3） |
 | **2** 正式版 | 官方 `/releases/latest`，目前 1.14.x | 求稳；**用不了 HTTP/3** |
-| **3** Alpine 系统包版 | `apk add sing-box`，版本由软件源决定 | **仅 Alpine**；连不上 GitHub 时用 |
+| **3** Alpine 系统包版 | `apk add sing-box`，版本由软件源决定 | **仅 Alpine**，且软件源里查得到这个包时才出现 |
+| **4** 临时 Edge 源 | 临时指定 Alpine edge/community 装 apk 包 | 稳定源没包、又不想走 GitHub 时；**要二次确认** |
 
-选项 3 会显示软件源里查到的版本（例如 edge/community 的 `1.13.21-r1`）。注意：Alpine 稳定分支的仓库通常没有 sing-box，脚本**不会擅自加 edge 源**；这一版也比较旧，**用不了 HTTP/3**。装完后随时可在「菜单 9 → 2」切换来源。
+Alpine 稳定分支的仓库通常**没有** sing-box，这时选项 3 会直接标注「本次不可用」，不会再让你白跑到 55% 才报错。选项 4 用的是「只对这一条命令生效」的临时源，**不会修改 `/etc/apk/repositories`**，但 edge 是滚动开发分支、可能与稳定版系统混用依赖，所以要显式输入 `y` 才启用，启用前还会先探测源里到底有没有包。系统包版都比较旧，**用不了 HTTP/3**；装完随时可在「菜单 9 → 2」换回官方二进制。
+
+### 安装会动系统里的东西吗
+
+- **必需依赖只补缺的**：`curl / jq / openssl / tar / gzip / ca-certificates`。确认屏会列出本次真正要装的包名；全都齐了就一个系统包都不装。
+- **可选依赖一律不自动装**：`qrencode`（二维码）、`dig`、`ss`、`procps` 等。要看二维码时会先问你 `y / N`，不同意就只打印文本链接，手动复制一样能用；`dig` / `ss` / `ps` 都有脚本内置回退，不装也不影响功能。
+- **订阅服务（nginx）默认不开**，安装时不会动它；要用时到菜单 `11` 自己选、并且会再问一次。
 
 ## 常用命令
 
@@ -79,7 +86,7 @@ GOMEMLIMIT 是**软目标**，只让 GC 更积极，不会把主服务 OOM kill�
 
 ## 常见问题
 
-- **卡在「55% 下载 sing-box」**：连不上 GitHub。看 `logs/singbox-download.log`，可挂代理、`SINGBOX_DOWNLOAD_MIRROR=https://ghproxy.net/ bash sb.sh`，或重跑并选 `3` 用 Alpine 系统包版。现在下载失败会**立即停止安装**，不会再打印假的「安装完成」。
+- **卡在「55% 下载 sing-box」**：连不上 GitHub。看 `logs/singbox-download.log`，可挂代理、`SINGBOX_DOWNLOAD_MIRROR=https://ghproxy.net/ bash sb.sh`；Alpine 也可以重跑后选 `4` 临时用 Edge 源装系统包版。下载失败会**立即停止安装**，不会再打印假的「安装完成」。
 - **客户端连不上但面板正常**：多半是 NAT / 端口映射，去菜单 `6` 填入站 IP 和映射端口。
 - **升级后菜单还是旧功能**：`sb` 是安装时的快照，跑一次 `sb update`。
 - **Alpine 提示 `cannot execute: required file not found`**：musl 需要 `-musl` 构建，脚本会自动选；旧版先 `sb update`。
@@ -96,13 +103,19 @@ GOMEMLIMIT 是**软目标**，只让 GC 更积极，不会把主服务 OOM kill�
 
 ### 交付约定
 
-- 本地交付恰好三份：`sing-box-nat-v3.9.19.sh`、`sing-box-nat-v3.9.19-nocomment.sh`、`README.md`（固定名）。每次 `VERSION` +0.1 时前两份同步重命名，README 头部徽标与更新日志同步。
+- 本地交付恰好三份：`sing-box-nat-v3.9.20.sh`、`sing-box-nat-v3.9.20-nocomment.sh`、`README.md`（固定名）。每次 `VERSION` +0.1 时前两份同步重命名，README 头部徽标与更新日志同步。
 - **仓库入口永远叫 `sing-box.sh`**：`UPDATE_URL` 与已部署机器的 `sb update` 都依赖这个固定地址，改名会让旧机器集体失效。发布时把带版本号的文件复制/上传成 `sing-box.sh`，原件留作归档。
 - 校验四件套：两份脚本 `bash -n`、非注释代码行逐字一致、heredoc 体逐字一致、纯 LF；版本号在源码 `VERSION`、第 9 行文件头、无注释版、README 徽标四处一致。
 
 ### 更新日志
 
-### V3.9.19（当前版本）
+### V3.9.20（当前版本）
+- **依赖分层**：开局只补确实缺的必需依赖（`curl / jq / openssl / tar / gzip / ca-certificates`），且带硬超时；`qrencode / bind-tools / procps / iproute2` 不再自动安装。二维码功能入口先显式问 `y / N`，拒绝也能复制文本链接；二维码菜单新增第 3 项可随时补装。`port_used` 增加 `/proc/net/tcp*` 回退，没有 `ss` 也能正确判端口占用。
+- **软件源查不到 sing-box 时不再给一个假选项**：选项 3 标注「本次不可用」并拦截输入；新增选项 4「临时 Alpine Edge 源」，需二次确认 + 现场探测，命令用 `--repository=` 只对单次生效，**不改 `/etc/apk/repositories`**。开关 `APK_USE_EDGE` 写入 settings.env，重装 / 升级沿用。
+- 确认屏改为列出本次真正要装的必需包名；所有包管理器动作统一套 `run_with_timeout`，避免 apt/apk 卡 DNS 时把安装挂死。
+- 参考 `caigouzi121380/singbox-deploy` 的 Alpine 安装思路（临时指定 edge/community 源），但保留本项目的架构/libc 判断、版本选择和「系统级动作先问」原则。
+
+### V3.9.19
 - 安装时可选 **Alpine 系统包版**：识别系统后查 apk 源版本并显示在确认屏，走 Alpine CDN、不碰 GitHub，`$BIN` 用软链跟随系统包升级。
 - 修掉「下载失败仍继续写服务并打印安装完成」；两条安装路径都检查返回值。
 - 接管 apk 自带的 `/etc/init.d/sing-box` 前先备份，卸载时按需还原；卸载确认屏说明系统包不会自动卸掉。
