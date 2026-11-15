@@ -79,12 +79,13 @@ INSTALL_SOURCE="${INSTALL_SOURCE:-github}"
 INSTALL_CHANNEL_CHOICE=""; INSTALL_CHANNEL_PRESET=""; INSTALL_SOURCE_CHOICE=""
 APK_PKG_VER=""; APK_PKG_VER_CHECKED=0
 APK_USE_EDGE="${APK_USE_EDGE:-0}"; APK_EDGE_CHOICE=""
-APK_EDGE_REPO="https://dl-cdn.alpinelinux.org/alpine/edge/community"
+APK_EDGE_REPO="http://dl-cdn.alpinelinux.org/alpine/edge/community"
+APK_EDGE_REPO_ALT="https://dl-cdn.alpinelinux.org/alpine/edge/community"
 DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.20"
+VERSION="V3.9.21"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -2308,7 +2309,7 @@ upgrade_singbox(){
             _apk_available || { warn "选项 5 仅 Alpine 可用"; pause; return 1; }
             if [ "${APK_USE_EDGE:-0}" != "1" ] && [ -z "$(_apk_pkg_version_cached 2>/dev/null)" ]; then
                 warn "本机稳定软件源里查不到 sing-box，直接切换会失败"
-                echo  "    重装时在确认屏选 4 可临时用 Alpine Edge 源，或自行加 edge/community 源后再来"
+                echo  "    重装时在确认屏选 3 会自动用 Alpine Edge 源，或自行加 edge/community 源后再来"
                 echo  "    也可以继续选 1~4 用 GitHub 官方二进制"
                 pause; return 1
             fi
@@ -7494,37 +7495,29 @@ _ask(){
 }
 choose_install_channel(){
     local _pre="${INSTALL_CHANNEL_PRESET:-${SINGBOX_CHANNEL:-any}}" _a="" _try=0 _ch=""
-    local _def="" _prompt="" _label="" _apk_ver="" _apk_ok=0 _range="1 或 2"
-    local _edge_ok=0 _edge_ver="" _edge_confirm=0
+    local _def="" _prompt="" _label="" _apk_ver="" _apk_ok=0 _range="1 或 2" _edge_ver=""
     case "$_pre" in stable|pre) ;; *) _pre="any" ;; esac
     APK_EDGE_CHOICE=""
     if _apk_available; then
         _apk_ver="$(_apk_pkg_version_cached)"
-        if [ -n "$_apk_ver" ]; then _apk_ok=1; _range="1、2 或 3"; fi
-    fi
-    if _apk_available && [ "$_apk_ok" = "0" ]; then
-        _edge_ok=1; _range="1、2 或 4"
+        _range="1、2 或 3"
+        [ -n "$_apk_ver" ] && _apk_ok=1
     fi
     echo "  ${BOLD}选择 sing-box 内核${RESET}"
     echo "    ${BOLD}1.${RESET} 最新版（含 alpha/beta，GitHub）  ${GREEN}← 推荐，功能最全${RESET}"
     echo "       ${DIM}HTTP/2 显式声明、HTTP/3 都要 1.15.0+，只有这条路装得到${RESET}"
     echo "    ${BOLD}2.${RESET} 正式版（stable，GitHub）       ${DIM}最稳，取官方 /latest${RESET}"
     echo "       ${DIM}官方正式线目前停在 1.14.x，装它就用不了 HTTP/3${RESET}"
-    if [ "$_apk_ok" = "1" ]; then
-        echo "    ${BOLD}3.${RESET} Alpine 系统包版（apk 源：${GREEN}${_apk_ver}${RESET}）"
-        echo "       ${DIM}走 Alpine CDN，不碰 GitHub；版本较旧，用不了 HTTP/3${RESET}"
+    if _apk_available; then
+        if [ "$_apk_ok" = "1" ]; then
+            echo "    ${BOLD}3.${RESET} Alpine 系统包版（apk 源：${GREEN}${_apk_ver}${RESET}）"
+            echo "       ${DIM}走 Alpine CDN、不碰 GitHub；版本较旧，用不了 HTTP/3${RESET}"
+        else
+            echo "    ${BOLD}3.${RESET} Alpine 系统包版（稳定源无包，临时用 Edge 源）"
+            echo "       ${DIM}临时源不改系统配置；edge 属滚动分支、版本较旧，用不了 HTTP/3${RESET}"
+        fi
         [ -x /usr/bin/sing-box ] && \
             echo "  ${DIM}检测到系统已装 apk 包版 sing-box，选 3 会直接接管它。${RESET}"
-    elif _apk_available; then
-        echo "  ${YELLOW}Alpine 系统包版（选项 3）本次不可用：稳定软件源里查不到 sing-box。${RESET}"
-        echo "  ${DIM}  自查：apk update && apk search -x sing-box${RESET}"
-        echo "  ${DIM}  想用 apk 包可选 4（临时 Edge 源，需二次确认）；否则选 1 或 2 走 GitHub 官方二进制。${RESET}"
-        echo "  ${DIM}  脚本不会擅自修改 /etc/apk/repositories。${RESET}"
-    fi
-    if [ "$_edge_ok" = "1" ]; then
-        echo "    ${BOLD}4.${RESET} 临时用 Alpine Edge 源安装（不改系统软件源）"
-        echo "       ${YELLOW}⚠ edge 是滚动开发分支，与稳定版系统混用依赖有兼容风险，需二次确认${RESET}"
-        echo "       ${DIM}稳定源没有 sing-box 时的备用路；也可直接选 1 走官方二进制${RESET}"
     fi
     echo "  ${DIM}必须输入 $_range 后回车；只按回车 / 空输入不算选择。${RESET}"
     echo
@@ -7552,43 +7545,17 @@ choose_install_channel(){
         case "$_a" in
             1|any|latest) _ch="any"; APK_EDGE_CHOICE=0; break ;;
             2|stable)     _ch="stable"; APK_EDGE_CHOICE=0; break ;;
-            3|apk|system)
-                if [ "$_apk_ok" = "1" ]; then _ch="apk"; APK_EDGE_CHOICE=0; break; fi
-                if _apk_available; then
-                    warn "本机稳定软件源里查不到 sing-box，选项 3 当前不可用"
-                    echo  "    自查：apk update && apk search -x sing-box"
-                    echo  "    想用 apk 包请选 4（临时 Edge 源，需二次确认），或选 1 / 2 走官方二进制"
+            3|apk|system|4|edge|apk-edge)
+                if ! _apk_available; then
+                    warn "选项 3 仅 Alpine 可用"; _try=$((_try + 1))
+                elif [ "$_apk_ok" = "1" ]; then
+                    _ch="apk"; APK_EDGE_CHOICE=0; break
                 else
-                    warn "选项 3 仅 Alpine 可用"
-                fi
-                warn "请输入 $_range"; _try=$((_try + 1)) ;;
-            4|edge|apk-edge)
-                if [ "$_edge_ok" != "1" ]; then
-                    warn "选项 4 当前不可用（仅 Alpine 且稳定源没有 sing-box 时提供）"
-                    _try=$((_try + 1))
-                else
-                    echo
-                    warn "选项 4 会临时从 Alpine Edge 社区源安装 sing-box（不改 /etc/apk/repositories）"
-                    echo  "    ⚠ edge 是滚动开发分支，与稳定版系统混用依赖有兼容风险；"
-                    echo  "      小内存机器还可能被拉入额外依赖。仅在确实需要 apk 包时选。"
-                    _edge_confirm=0
-                    if _ask "  确认临时使用 Edge 源？输入 y 继续 / n 返回重选： "; then
-                        case "$_ASK_VALUE" in y|Y|yes|YES) _edge_confirm=1 ;; esac
-                    else
-                        warn "读不到确认，已放弃选项 4"
+                    _edge_ver="$(_apk_edge_pkg_version 2>/dev/null)" || _edge_ver=""
+                    if [ -n "$_edge_ver" ]; then
+                        _ch="apk"; APK_EDGE_CHOICE=1; break
                     fi
-                    if [ "$_edge_confirm" = "1" ]; then
-                        info "正在探测 Edge 源里是否有 sing-box ..."
-                        _edge_ver="$(_apk_edge_pkg_version 2>/dev/null)" || _edge_ver=""
-                        if [ -n "$_edge_ver" ]; then
-                            ok "Edge 源可用（sing-box $_edge_ver）"
-                            _ch="apk"; APK_EDGE_CHOICE=1; break
-                        fi
-                        warn "Edge 源探测失败（源不可达 / 没有 sing-box 包 / 超时），选项 4 本次不可用"
-                        echo  "    请改选 1 或 2 走 GitHub 官方二进制"
-                    else
-                        info "已取消选项 4，请重新选择"
-                    fi
+                    warn "稳定源和 Edge 源都查不到 sing-box，选项 3 本次不可用；请选 1 或 2"
                     _try=$((_try + 1))
                 fi ;;
             '')
@@ -7611,8 +7578,8 @@ choose_install_channel(){
     if [ "$_ch" = "apk" ]; then
         INSTALL_CHANNEL_CHOICE=""
         INSTALL_SOURCE_CHOICE="apk"
-        if [ "${APK_EDGE_CHOICE:-0}" = "1" ]; then _label="Alpine Edge 源（系统包版，临时）"
-        else _label="Alpine 系统包版（apk）"; fi
+        if [ "${APK_EDGE_CHOICE:-0}" = "1" ]; then _label="Alpine 系统包版（Edge 源 ${_edge_ver}）"
+        else _label="Alpine 系统包版（apk ${_apk_ver}）"; fi
     else
         INSTALL_CHANNEL_CHOICE="$_ch"
         INSTALL_SOURCE_CHOICE="github"
@@ -7654,7 +7621,7 @@ confirm_install(){
     choose_install_channel || return 1
     echo
     if [ "${INSTALL_SOURCE_CHOICE:-}" = "apk" ]; then
-        if [ "${APK_EDGE_CHOICE:-0}" = "1" ]; then _cl="Alpine Edge 源（系统包版，临时）"
+        if [ "${APK_EDGE_CHOICE:-0}" = "1" ]; then _cl="Alpine 系统包版（Edge 源）"
         else _cl="Alpine 系统包版（apk）"; fi
     elif [ "$INSTALL_CHANNEL_CHOICE" = "stable" ]; then _cl="正式版（stable）"
     else _cl="最新版（含 alpha/beta）"; fi
@@ -7721,7 +7688,8 @@ initial_install(){
     progress 45 "识别服务器地理位置"
     detect_country
     if [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
-        progress 55 "安装 sing-box（Alpine 软件源）"
+        if [ "${APK_USE_EDGE:-0}" = "1" ]; then progress 55 "安装 sing-box（Alpine Edge 源）"
+        else progress 55 "安装 sing-box（Alpine 软件源）"; fi
         if ! install_singbox_from_apk; then
             warn "系统包版安装失败，安装已停止（未写入系统服务）"
             echo  "    也可重跑脚本，在确认屏选 1 或 2 改用 GitHub 官方二进制"
@@ -7867,16 +7835,19 @@ _apk_pkg_version_cached(){
 }
 _apk_edge_pkg_version(){
     _apk_available || return 1
-    local out="" v=""
-    out="$(run_with_timeout 45 apk search -x -X "$APK_EDGE_REPO" sing-box 2>/dev/null)" || out=""
-    v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
-    if [ -z "$v" ]; then
-        run_with_timeout 45 apk update -X "$APK_EDGE_REPO" >/dev/null 2>&1 || true
-        out="$(run_with_timeout 20 apk search -x -X "$APK_EDGE_REPO" sing-box 2>/dev/null)" || out=""
+    local repo out="" v=""
+    for repo in "$APK_EDGE_REPO" "${APK_EDGE_REPO_ALT:-}"; do
+        [ -n "$repo" ] || continue
+        out="$(run_with_timeout 45 apk search -x -X "$repo" sing-box 2>/dev/null)" || out=""
         v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
-    fi
-    [ -n "$v" ] || return 1
-    printf '%s\n' "$v"
+        if [ -z "$v" ]; then
+            run_with_timeout 45 apk update -X "$repo" >/dev/null 2>&1 || true
+            out="$(run_with_timeout 20 apk search -x -X "$repo" sing-box 2>/dev/null)" || out=""
+            v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
+        fi
+        [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+    done
+    return 1
 }
 _apk_init_backup(){
     [ "${INIT:-none}" = openrc ] || return 0
@@ -7894,25 +7865,35 @@ _apk_init_backup(){
 install_singbox_from_apk(){
     _apk_available || { warn "本机不是 Alpine 或没有 apk，无法使用系统包版"; return 1; }
     local _log="${LOGDIR:-/tmp}/apk-install.log" _sysbin="" _ver=""
+    local _rc=1 _repo="" _n=0 _wn=""
     info "正在从 Alpine 软件源安装 sing-box（不访问 GitHub）..."
     : > "$_log" 2>/dev/null || _log="/tmp/singbox-nat-apk.log"
     if [ "${APK_USE_EDGE:-0}" = "1" ]; then
-        warn "本次临时使用 Alpine Edge 社区源（$APK_EDGE_REPO），不会修改系统软件源"
-        echo  "    edge 包可能与稳定版系统混用依赖；如遇异常可在「sing-box 管理 → 2」换回官方二进制"
-        if ! run_with_timeout 240 apk add --no-cache --repository="$APK_EDGE_REPO" sing-box >"$_log" 2>&1; then
-            warn "从 Alpine edge/community 安装 sing-box 失败（源不可达 / 索引过期 / 依赖冲突）"
-            echo  "    可自查：apk search -x -X $APK_EDGE_REPO sing-box"
-            echo  "    安装日志：$_log"
-            return 1
-        fi
+        run_with_timeout 90 apk update >>"$_log" 2>&1 || true
+        _wn="${_SB_WAITN:-0}"; _SB_WAITN=0
+        for _repo in "$APK_EDGE_REPO" "${APK_EDGE_REPO_ALT:-}"; do
+            [ -n "$_repo" ] || continue
+            _n=$((_n + 1))
+            [ "$_n" -gt 1 ] && printf '\n---- 主源失败，改用备用地址 %s ----\n' "$_repo" >>"$_log"
+            if run_with_timeout 300 apk add --repository="$_repo" sing-box >>"$_log" 2>&1; then
+                _rc=0; break
+            fi
+        done
+        _SB_WAITN="$_wn"
     else
-        if ! run_with_timeout 180 apk add --no-cache sing-box >"$_log" 2>&1; then
+        if run_with_timeout 180 apk add --no-cache sing-box >"$_log" 2>&1; then _rc=0; fi
+    fi
+    if [ "$_rc" != "0" ]; then
+        if [ "${APK_USE_EDGE:-0}" = "1" ]; then
+            warn "从 Alpine Edge 源安装 sing-box 失败"
+        else
             warn "apk 安装 sing-box 失败（软件源里没有该包 / 网络不可达 / 索引过期）"
-            echo  "    可自查：apk update && apk search -x sing-box"
-            echo  "    稳定分支通常不含此包；重装时可选「临时 Edge 源」或改选 GitHub 官方二进制"
-            echo  "    安装日志：$_log"
-            return 1
+            echo  "    稳定分支通常不含此包；重跑选 3 会自动用 Edge 源，或选 1/2 走 GitHub"
         fi
+        echo  "    安装日志：$_log"
+        echo  "    ---- 日志末尾 ----"
+        tail -n 12 "$_log" 2>/dev/null | sed 's/^/    /' || true
+        return 1
     fi
     if [ -x /usr/bin/sing-box ]; then
         _sysbin=/usr/bin/sing-box
@@ -7934,7 +7915,7 @@ install_singbox_from_apk(){
 }
 _channel_label(){
     if [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
-        if [ "${APK_USE_EDGE:-0}" = "1" ]; then printf 'Alpine Edge 源（系统包版）\n'
+        if [ "${APK_USE_EDGE:-0}" = "1" ]; then printf 'Alpine 系统包版（Edge 源）\n'
         else printf 'Alpine 软件源（系统包版）\n'; fi
         return 0
     fi
