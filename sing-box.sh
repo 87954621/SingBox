@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.21"
+VERSION="V3.9.22"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -7865,23 +7865,33 @@ _apk_init_backup(){
 install_singbox_from_apk(){
     _apk_available || { warn "本机不是 Alpine 或没有 apk，无法使用系统包版"; return 1; }
     local _log="${LOGDIR:-/tmp}/apk-install.log" _sysbin="" _ver=""
-    local _rc=1 _repo="" _n=0 _wn=""
+    local _rc=1 _repo="" _n=0 _use_timeout=0
+    local -a _cmd=()
     info "正在从 Alpine 软件源安装 sing-box（不访问 GitHub）..."
     : > "$_log" 2>/dev/null || _log="/tmp/singbox-nat-apk.log"
+    command -v timeout >/dev/null 2>&1 && _use_timeout=1
     if [ "${APK_USE_EDGE:-0}" = "1" ]; then
-        run_with_timeout 90 apk update >>"$_log" 2>&1 || true
-        _wn="${_SB_WAITN:-0}"; _SB_WAITN=0
+        if [ "$_use_timeout" = "1" ]; then _cmd=(timeout -k 10 120 apk update)
+        else _cmd=(apk update); fi
+        "${_cmd[@]}" >>"$_log" 2>&1 || true
         for _repo in "$APK_EDGE_REPO" "${APK_EDGE_REPO_ALT:-}"; do
             [ -n "$_repo" ] || continue
             _n=$((_n + 1))
             [ "$_n" -gt 1 ] && printf '\n---- 主源失败，改用备用地址 %s ----\n' "$_repo" >>"$_log"
-            if run_with_timeout 300 apk add --repository="$_repo" sing-box >>"$_log" 2>&1; then
-                _rc=0; break
+            if [ "$_use_timeout" = "1" ]; then
+                _cmd=(timeout -k 15 300 apk add --repository="$_repo" sing-box)
+            else
+                _cmd=(apk add --repository="$_repo" sing-box)
             fi
+            if "${_cmd[@]}" >>"$_log" 2>&1; then _rc=0; break; fi
         done
-        _SB_WAITN="$_wn"
     else
-        if run_with_timeout 180 apk add --no-cache sing-box >"$_log" 2>&1; then _rc=0; fi
+        if [ "$_use_timeout" = "1" ]; then
+            _cmd=(timeout -k 15 180 apk add --no-cache sing-box)
+        else
+            _cmd=(apk add --no-cache sing-box)
+        fi
+        if "${_cmd[@]}" >"$_log" 2>&1; then _rc=0; fi
     fi
     if [ "$_rc" != "0" ]; then
         if [ "${APK_USE_EDGE:-0}" = "1" ]; then

@@ -2,7 +2,7 @@
 
 一个 Bash 单文件脚本，在 Linux 上一键部署和管理 **16 种 sing-box 协议**，自带中文菜单、节点管理、订阅链接和 Argo 隧道。支持 Debian / Ubuntu / CentOS / Alpine / Arch，systemd / OpenRC / 无 init 都能跑，**NAT 小鸡没有公网端口也能用**。
 
-**V3.9.21**
+**V3.9.22**
 
 ---
 
@@ -102,13 +102,16 @@ GOMEMLIMIT 是**软目标**，只让 GC 更积极，不会把主服务 OOM kill�
 
 ### 交付约定
 
-- 本地交付恰好三份：`sing-box-nat-v3.9.21.sh`、`sing-box-nat-v3.9.21-nocomment.sh`、`README.md`（固定名）。每次 `VERSION` +0.1 时前两份同步重命名，README 头部徽标与更新日志同步。
+- 本地交付恰好三份：`sing-box-nat-v3.9.22.sh`、`sing-box-nat-v3.9.22-nocomment.sh`、`README.md`（固定名）。每次 `VERSION` +0.1 时前两份同步重命名，README 头部徽标与更新日志同步。
 - **仓库入口永远叫 `sing-box.sh`**：`UPDATE_URL` 与已部署机器的 `sb update` 都依赖这个固定地址，改名会让旧机器集体失效。发布时把带版本号的文件复制/上传成 `sing-box.sh`，原件留作归档。
 - 校验四件套：两份脚本 `bash -n`、非注释代码行逐字一致、heredoc 体逐字一致、纯 LF；版本号在源码 `VERSION`、第 9 行文件头、无注释版、README 徽标四处一致。
 
 ### 更新日志
 
-### V3.9.21（当前版本）
+### V3.9.22（当前版本）
+- **修掉 Edge 源「探测得到、装到一半失败」**：V3.9.21 用自研 `run_with_timeout` 把 `apk add` 丢到后台执行、还吞掉 stderr，真机上两次都卡在 `(1/2) Installing sing-box` 被误判失败且看不到原因。现在改为**前台执行**（与 yyds 一致），仅用系统自带 `timeout` 命令兜硬超时，保留完整错误日志。
+
+### V3.9.21
 - **内核选项精简为三选一**：取消独立的选项 4 和「确认临时使用 Edge 源」二次提问。选项 3 恒为「Alpine 系统包版」——稳定源有包用稳定源、没包就静默探测并临时用 Edge 源（`--repository` 只对单条命令生效，**不改 `/etc/apk/repositories`**），风险写进选项说明，最后一道 `y` 即为授权。老用户敲 `4` 仍等价选项 3。
 - **修掉 Edge 源「探测得到、装不上」**：照搬 `install-singbox-yyds.sh` 真机成功过的命令形态——先 `apk update`，再 `apk add --repository=http://.../edge/community sing-box`，**去掉 `--no-cache`**（它会忽略 `-X/--repository` 追加源的索引，正是上一版查得到包却装失败的根因）；主源失败静默换 https 备用源，失败时把日志末尾直接贴出来。
 
