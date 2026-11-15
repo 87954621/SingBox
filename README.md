@@ -2,7 +2,7 @@
 
 一个 Bash 单文件脚本，在 Linux 上一键部署和管理 **16 种 sing-box 协议**，自带中文菜单、节点管理、订阅链接和 Argo 隧道。支持 Debian / Ubuntu / CentOS / Alpine / Arch，systemd / OpenRC / 无 init 都能跑，**NAT 小鸡没有公网端口也能用**。
 
-**V3.9.22**
+**V3.9.23**
 
 ---
 
@@ -81,7 +81,9 @@ http://<服务器IP>:8088/sub/<token>
 | 不开 Argo / 订阅 | 菜单 `12` / `11` | cloudflared 常驻 20~40M |
 | 低内存模式 | 菜单 `8 → 6` | Go 堆软上限 + warn 日志；≤512 MiB 的机器首次安装自动开 |
 
-GOMEMLIMIT 是**软目标**，只让 GC 更积极，不会把主服务 OOM kill；Swap 命令体检屏只打印、不代做。换安装源（apk 版 / 官方二进制）**不会更省内存**，两者是同一个 Go 程序。
+GOMEMLIMIT 是**软目标**，只让 GC 更积极，不会把主服务 OOM kill；Swap 命令体检屏只打印、不代做。换安装源（apk 版 / 官方二进制）**运行起来后内存一样**，两者是同一个 Go 程序。
+
+> 注意：低内存模式只管**运行时**的 sing-box，管不到**安装阶段**的 apk 下载/解压。极小的机器（如 91 MiB）若装 apk 系统包版时被系统 `Killed`（内存不足），请改选 `1` 用 GitHub 单文件二进制——它不需要 apk 解压、跑 trigger、写包数据库，安装期内存峰值低得多。
 
 ## 常见问题
 
@@ -102,13 +104,17 @@ GOMEMLIMIT 是**软目标**，只让 GC 更积极，不会把主服务 OOM kill�
 
 ### 交付约定
 
-- 本地交付恰好三份：`sing-box-nat-v3.9.22.sh`、`sing-box-nat-v3.9.22-nocomment.sh`、`README.md`（固定名）。每次 `VERSION` +0.1 时前两份同步重命名，README 头部徽标与更新日志同步。
+- 本地交付恰好三份：`sing-box-nat-v3.9.23.sh`、`sing-box-nat-v3.9.23-nocomment.sh`、`README.md`（固定名）。每次 `VERSION` +0.1 时前两份同步重命名，README 头部徽标与更新日志同步。
 - **仓库入口永远叫 `sing-box.sh`**：`UPDATE_URL` 与已部署机器的 `sb update` 都依赖这个固定地址，改名会让旧机器集体失效。发布时把带版本号的文件复制/上传成 `sing-box.sh`，原件留作归档。
 - 校验四件套：两份脚本 `bash -n`、非注释代码行逐字一致、heredoc 体逐字一致、纯 LF；版本号在源码 `VERSION`、第 9 行文件头、无注释版、README 徽标四处一致。
 
 ### 更新日志
 
-### V3.9.22（当前版本）
+### V3.9.23（当前版本）
+- **Edge 源 apk 安装改为完全裸跑**：真机 `Killed`（SIGKILL）证明连 `timeout` 包装进程本身都被系统杀掉——91 MiB 小内存上，任何包装（后台 `run_with_timeout` / 前台 `timeout`）都会把 apk 挤过内存红线。现在 apk 完全裸跑（与 yyds 和你手动成功的命令一致），失败时若日志出现「安装到一半无 OK」会明确提示是内存不足，并建议改选 1 走内存峰值更低的单文件二进制。
+- 说明：`GOMEMLIMIT`（低内存模式）只约束 sing-box **运行时**的 Go 堆，管不到 apk 这个 C 程序，所以帮不上安装这一步。
+
+### V3.9.22
 - **修掉 Edge 源「探测得到、装到一半失败」**：V3.9.21 用自研 `run_with_timeout` 把 `apk add` 丢到后台执行、还吞掉 stderr，真机上两次都卡在 `(1/2) Installing sing-box` 被误判失败且看不到原因。现在改为**前台执行**（与 yyds 一致），仅用系统自带 `timeout` 命令兜硬超时，保留完整错误日志。
 
 ### V3.9.21

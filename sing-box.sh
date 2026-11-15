@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.22"
+VERSION="V3.9.23"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -7865,33 +7865,19 @@ _apk_init_backup(){
 install_singbox_from_apk(){
     _apk_available || { warn "本机不是 Alpine 或没有 apk，无法使用系统包版"; return 1; }
     local _log="${LOGDIR:-/tmp}/apk-install.log" _sysbin="" _ver=""
-    local _rc=1 _repo="" _n=0 _use_timeout=0
-    local -a _cmd=()
+    local _rc=1 _repo="" _n=0
     info "正在从 Alpine 软件源安装 sing-box（不访问 GitHub）..."
     : > "$_log" 2>/dev/null || _log="/tmp/singbox-nat-apk.log"
-    command -v timeout >/dev/null 2>&1 && _use_timeout=1
     if [ "${APK_USE_EDGE:-0}" = "1" ]; then
-        if [ "$_use_timeout" = "1" ]; then _cmd=(timeout -k 10 120 apk update)
-        else _cmd=(apk update); fi
-        "${_cmd[@]}" >>"$_log" 2>&1 || true
+        apk update >>"$_log" 2>&1 || true
         for _repo in "$APK_EDGE_REPO" "${APK_EDGE_REPO_ALT:-}"; do
             [ -n "$_repo" ] || continue
             _n=$((_n + 1))
             [ "$_n" -gt 1 ] && printf '\n---- 主源失败，改用备用地址 %s ----\n' "$_repo" >>"$_log"
-            if [ "$_use_timeout" = "1" ]; then
-                _cmd=(timeout -k 15 300 apk add --repository="$_repo" sing-box)
-            else
-                _cmd=(apk add --repository="$_repo" sing-box)
-            fi
-            if "${_cmd[@]}" >>"$_log" 2>&1; then _rc=0; break; fi
+            if apk add --repository="$_repo" sing-box >>"$_log" 2>&1; then _rc=0; break; fi
         done
     else
-        if [ "$_use_timeout" = "1" ]; then
-            _cmd=(timeout -k 15 180 apk add --no-cache sing-box)
-        else
-            _cmd=(apk add --no-cache sing-box)
-        fi
-        if "${_cmd[@]}" >"$_log" 2>&1; then _rc=0; fi
+        if apk add --no-cache sing-box >"$_log" 2>&1; then _rc=0; fi
     fi
     if [ "$_rc" != "0" ]; then
         if [ "${APK_USE_EDGE:-0}" = "1" ]; then
@@ -7903,6 +7889,13 @@ install_singbox_from_apk(){
         echo  "    安装日志：$_log"
         echo  "    ---- 日志末尾 ----"
         tail -n 12 "$_log" 2>/dev/null | sed 's/^/    /' || true
+        if grep -q 'Installing sing-box' "$_log" 2>/dev/null && ! grep -q '^OK:' "$_log" 2>/dev/null; then
+            echo
+            warn "看日志像是 apk 装到一半被系统杀掉（小内存机器内存不足 / OOM）"
+            echo  "    GOMEMLIMIT（低内存模式）只约束 sing-box 运行时，管不到 apk 安装这一步。"
+            echo  "    这种机器更省内存的办法：重跑并在确认屏选 1，用 GitHub 单文件二进制，"
+            echo  "    它不像 apk 要解压包 / 跑 trigger / 写 apk 数据库，内存峰值低得多。"
+        fi
         return 1
     fi
     if [ -x /usr/bin/sing-box ]; then
