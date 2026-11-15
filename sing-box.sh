@@ -80,7 +80,7 @@ INSTALL_CHANNEL_CHOICE=""; INSTALL_CHANNEL_PRESET=""; INSTALL_SOURCE_CHOICE=""
 APK_PKG_VER=""; APK_PKG_VER_CHECKED=0
 APK_USE_EDGE="${APK_USE_EDGE:-0}"; APK_EDGE_CHOICE=""
 APK_EDGE_REPO="http://dl-cdn.alpinelinux.org/alpine/edge/community"
-APK_EDGE_REPO_ALT="https://dl-cdn.alpinelinux.org/alpine/edge/community"
+APK_EDGE_REPO_ALT="http://dl-cdn.alpinelinux.org/alpine/edge/community"
 DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
@@ -7884,29 +7884,26 @@ install_singbox_from_apk(){
     fi
     if [ -n "$_mem" ]; then
         info "检测到容器内存上限约 ${_mem} MiB"
-        if [ "$_mem" -lt 96 ]; then
-            warn "容器内存上限低于 96 MiB，APK 解包很可能再次触发 OOM；为避免反复打满 CPU/内存，本次停止安装。"
-            echo "    请先让服务商提高内存上限，或由宿主机管理员开放 Swap 配额后再安装。"
-            return 1
-        elif [ "$_mem" -lt 160 ]; then
-            warn "当前内存低于 160 MiB，APK 解包仍有 OOM 风险；已关闭菜单阶段的索引更新和 Edge 预扫描。"
+        if [ "$_mem" -lt 160 ]; then
+            warn "当前内存低于 160 MiB，APK 解包仍有 OOM 风险；本次仅尝试一次安装，不做重复重试。"
         fi
     fi
 
     if [ "${APK_USE_EDGE:-0}" = "1" ]; then
-        # 不再先执行 apk update：它会额外下载/解析索引，增加低内存机器的峰值。
-        # --no-cache 避免写本地索引缓存；--no-progress 减少终端/日志开销。
-        _repo="${APK_EDGE_REPO_ALT:-https://dl-cdn.alpinelinux.org/alpine/edge/community}"
-        apk add --no-cache --no-progress --repository="$_repo" sing-box >>"$_log" 2>&1
+        # 优先复用 /var/cache/apk 中已有的索引和包缓存。
+        # 不使用 --no-cache：该选项会禁用缓存，可能导致每次安装重新拉取索引。
+        # 沿用对照脚本的 HTTP Edge community 地址，避免不必要的 TLS 开销。
+        _repo="${APK_EDGE_REPO_ALT:-http://dl-cdn.alpinelinux.org/alpine/edge/community}"
+        apk add --no-progress --repository="$_repo" sing-box >>"$_log" 2>&1
         _rc=$?
         # 只有非 OOM 的网络/仓库错误才尝试备用协议；OOM 后重试同一包只会再次被杀。
         if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 137 ] && [ -n "${APK_EDGE_REPO:-}" ] && [ "$APK_EDGE_REPO" != "$_repo" ]; then
             printf '\n---- 非 OOM 错误，改用备用地址 %s ----\n' "$APK_EDGE_REPO" >>"$_log"
-            apk add --no-cache --no-progress --repository="$APK_EDGE_REPO" sing-box >>"$_log" 2>&1
+            apk add --no-progress --repository="$APK_EDGE_REPO" sing-box >>"$_log" 2>&1
             _rc=$?
         fi
     else
-        apk add --no-cache --no-progress sing-box >"$_log" 2>&1
+        apk add --no-progress sing-box >"$_log" 2>&1
         _rc=$?
     fi
 
