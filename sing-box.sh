@@ -79,7 +79,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.17"
+VERSION="V3.9.18"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -812,6 +812,10 @@ load_settings(){
     ADVERTISE_PORT_BASE="${ADVERTISE_PORT_BASE:-}"
     [ -n "$ADVERTISE_IP" ] && { _is_ip_literal "$ADVERTISE_IP" || ADVERTISE_IP=""; }
     [ -n "$ADVERTISE_PORT_BASE" ] && { valid_port "$ADVERTISE_PORT_BASE" 2>/dev/null || ADVERTISE_PORT_BASE=""; }
+    LOW_MEM_MODE="${LOW_MEM_MODE:-0}"
+    case "$LOW_MEM_MODE" in 0|1) : ;; *) LOW_MEM_MODE=0 ;; esac
+    GO_MEM_LIMIT_MB="${GO_MEM_LIMIT_MB:-}"
+    case "$GO_MEM_LIMIT_MB" in *[!0-9]*) GO_MEM_LIMIT_MB="" ;; esac
 }
 save_settings(){
     cat > "$SETTINGS" <<EOF
@@ -837,6 +841,8 @@ SUBHTTP_ALLOW_IPS=$SUBHTTP_ALLOW_IPS
 SUBHTTP_BACKEND=$SUBHTTP_BACKEND
 ADVERTISE_IP=$ADVERTISE_IP
 ADVERTISE_PORT_BASE=$ADVERTISE_PORT_BASE
+LOW_MEM_MODE=$LOW_MEM_MODE
+GO_MEM_LIMIT_MB=$GO_MEM_LIMIT_MB
 EOF
 }
 valid_port(){ [[ "$1" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]; }
@@ -1127,9 +1133,12 @@ handshake_default(){ sni_default; }
 
 init_files(){
     [ -f "$NODES" ] || echo '[]' > "$NODES"
-    [ -f "$CONF" ] || cat > "$CONF" <<'EOF'
+    if [ ! -f "$CONF" ]; then
+        local _lvl="info"
+        [ "${LOW_MEM_MODE:-0}" = "1" ] && _lvl="warn"
+        cat > "$CONF" <<EOF
 {
-  "log": {"level": "info"},
+  "log": {"level": "$_lvl"},
   "inbounds": [],
   "outbounds": [
     {"type":"direct","tag":"direct"},
@@ -1137,6 +1146,7 @@ init_files(){
   ]
 }
 EOF
+    fi
 }
 backup(){
     local snap
@@ -1799,6 +1809,11 @@ apply(){
         rc-service sing-box restart || { warn "rc-service 重启 sing-box 失败"; return 1; }
     else
         pkill -f "$BIN run -c $CONF" 2>/dev/null || true
+        unset GOMEMLIMIT
+        if [ -r "$BASE/go-env" ]; then
+            . "$BASE/go-env"
+            [ -n "${GOMEMLIMIT:-}" ] && export GOMEMLIMIT
+        fi
         nohup "$BIN" run -c "$CONF" >>"$LOGDIR/sing-box.log" 2>&1 &
         echo $! > "$BASE/pid"
     fi
@@ -1877,7 +1892,196 @@ service_alive(){
         [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
     fi
 }
+
+_sys_mem_total_mb(){
+    [ -r /proc/meminfo ] || { printf ''; return 0; }
+    awk '/^MemTotal:/{printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null
+}
+_sys_mem_avail_mb(){
+    [ -r /proc/meminfo ] || { printf ''; return 0; }
+    awk '/^MemAvailable:/{printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null
+}
+_sys_swap_total_mb(){
+    [ -r /proc/meminfo ] || { printf '0'; return 0; }
+    awk '/^SwapTotal:/{printf "%d", $2/1024; exit}' /proc/meminfo 2>/dev/null
+}
+_go_mem_limit(){
+    [ "${LOW_MEM_MODE:-0}" = "1" ] || { printf ''; return 0; }
+    local lim="${GO_MEM_LIMIT_MB:-}" t
+    if [ -z "$lim" ]; then
+        t="$(_sys_mem_total_mb)"
+        case "$t" in ''|*[!0-9]*) t=512 ;; esac
+        lim=$(( t * 40 / 100 ))
+        [ "$lim" -lt 48 ]  && lim=48
+        [ "$lim" -gt 256 ] && lim=256
+    else
+        case "$lim" in *[!0-9]*) lim=64 ;; esac
+        [ "$lim" -lt 16 ] && lim=16
+    fi
+    printf '%s' "$lim"
+}
+write_go_env(){
+    mkdir -p "$BASE" 2>/dev/null || return 1
+    local lim tmp
+    lim="$(_go_mem_limit)"
+    tmp="${BASE}/.go-env.tmp"
+    if [ -n "$lim" ]; then
+        cat >"$tmp" <<EOF
+# 由 sing-box NAT 生成，请勿手改。
+# GOMEMLIMIT 是 Go 1.19+ 的堆软目标；切换模式后重启服务即可生效。
+GOMEMLIMIT=${lim}MiB
+EOF
+    else
+        cat >"$tmp" <<'EOF'
+# 由 sing-box NAT 生成，请勿手改。
+# 低内存模式未开启：不限制 Go 堆，保持 sing-box 默认行为。
+EOF
+    fi
+    [ -s "$tmp" ] || { rm -f "$tmp"; return 1; }
+    mv "$tmp" "${BASE}/go-env" || { rm -f "$tmp"; return 1; }
+    chmod 644 "${BASE}/go-env" 2>/dev/null || true
+    return 0
+}
+_proc_rss_mb(){
+    local pat="$1" sum=0 p v
+    for p in $(pgrep -f "$pat" 2>/dev/null); do
+        [ -r "/proc/$p/status" ] || continue
+        v="$(awk '/^VmRSS:/{printf "%d", $2/1024; exit}' "/proc/$p/status" 2>/dev/null)"
+        case "$v" in ''|*[!0-9]*) continue ;; esac
+        sum=$((sum + v))
+    done
+    printf '%s' "$sum"
+}
+mem_report(){
+    panel "内存体检"
+    local t a sw lvl ni nc rs_sb rs_cf rs_ng rs_py lim
+    t="$(_sys_mem_total_mb)"; a="$(_sys_mem_avail_mb)"; sw="$(_sys_swap_total_mb)"
+    case "$t" in ''|*[!0-9]*) t="?" ;; esac
+    case "$a" in ''|*[!0-9]*) a="?" ;; esac
+    case "$sw" in ''|*[!0-9]*) sw=0 ;; esac
+    lim="$(_go_mem_limit)"
+    ni="$(jq '(.inbounds // []) | length' "$CONF" 2>/dev/null || echo 0)"
+    nc="$(jq 'length' "$NODES" 2>/dev/null || echo 0)"
+    case "$ni" in ''|*[!0-9]*) ni=0 ;; esac
+    case "$nc" in ''|*[!0-9]*) nc=0 ;; esac
+    lvl="$(jq -r '.log.level // "info"' "$CONF" 2>/dev/null || echo info)"
+    rs_sb="$(_proc_rss_mb "$BIN run -c $CONF")"
+    rs_cf="$(_proc_rss_mb 'cloudflared tunnel')"
+    rs_ng="$(_proc_rss_mb 'nginx: master')"
+    rs_py="$(_proc_rss_mb 'subserver.py')"
+    kv "物理内存" "${t} MiB   ${DIM}可用 ${a} MiB${RESET}"
+    kv "Swap" "$([ "$sw" -gt 0 ] 2>/dev/null && echo "${sw} MiB" || echo "${YELLOW}未配置${RESET}")"
+    kv "低内存模式" "$([ "${LOW_MEM_MODE:-0}" = "1" ] && echo "${GREEN}已开启${RESET}（Go 堆软上限 ${lim:-?} MiB）" || echo "未开启")"
+    kv "常驻占用" "sing-box ${rs_sb}M  cloudflared ${rs_cf}M  nginx ${rs_ng}M  订阅 ${rs_py}M"
+    kv "节点 / inbound" "${nc} 个 / ${ni} 个"
+    kv "日志级别" "$lvl"
+    hr
+    echo "  ${BOLD}省内存建议${RESET}"
+    if [ "$ni" -gt 4 ] 2>/dev/null; then
+        echo "    · ${BOLD}当前 ${ni} 个 inbound，这是最大的一块${RESET}：每个都要常驻一份 TLS/QUIC"
+        echo "      上下文与连接缓冲区。建议只留 1~3 个协议（主菜单 3 → 删除节点）。"
+    fi
+    if [ "$rs_cf" -gt 0 ] 2>/dev/null; then
+        echo "    · cloudflared 常驻 ${rs_cf}M（Go 写的，正常就这么多）。不用 Argo 就到主菜单 12 停掉。"
+    fi
+    if [ "${SUBHTTP_ENABLED:-0}" = "1" ] && [ "${SUBHTTP_BACKEND:-}" != "nginx" ]; then
+        echo "    · 订阅服务当前是 Python 后端；换 nginx 更省（主菜单 11 → 换实现方式）。"
+        echo "      或用「导出文件 / 复制链接」完全不开订阅服务，空闲就是零进程零内存。"
+    fi
+    if [ "$lvl" = "info" ]; then
+        echo "    · 日志级别 info 会为每个连接写多行日志；下面第 4 项可改成 warn。"
+    fi
+    if [ "$sw" -eq 0 ] 2>/dev/null; then
+        echo "    · ${BOLD}没有 Swap${RESET}：小内存机器最容易被 OOM Killer 直接杀掉 sing-box。"
+        echo "      想加请自行执行（系统级改动，脚本不会替你做）："
+        echo "        fallocate -l 256M /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile"
+        echo "        echo '/swapfile none swap sw 0 0' >> /etc/fstab"
+        echo "      ${DIM}没有 fallocate 时改用：dd if=/dev/zero of=/swapfile bs=1M count=256${RESET}"
+    fi
+    if [ "${LOW_MEM_MODE:-0}" != "1" ]; then
+        echo "    · 开启低内存模式（下面第 1 项）：给 Go 堆设软上限，通常能再省一截常驻。"
+    fi
+    echo "    · 脚本本身只在菜单打开时占内存，退出即释放；常驻的只有上面这些服务。"
+    hr
+}
+lowmem_set_loglevel(){
+    [ -f "$CONF" ] || { warn "配置文件不存在：$CONF"; return 1; }
+    if ! jq '.log = ((.log // {}) + {"level":"warn"})' "$CONF" >"${CONF}.tmp" 2>/dev/null; then
+        rm -f "${CONF}.tmp"; warn "jq 处理失败，config.json 未改动"; return 1
+    fi
+    mv "${CONF}.tmp" "$CONF" || { rm -f "${CONF}.tmp"; warn "写入失败，config.json 未改动"; return 1; }
+    ok "已把 config.json 的日志级别设为 warn（重启后生效）"
+    return 0
+}
+lowmem_restart(){
+    write_go_env || true
+    if service_alive; then
+        info "重启 sing-box 使新设置生效 ..."
+        apply || warn "sing-box 重启失败（配置可能有误，未强行覆盖）"
+    else
+        info "sing-box 未运行，跳过重启"
+    fi
+    if command -v argo_svc_running >/dev/null 2>&1 && argo_svc_running >/dev/null 2>&1; then
+        info "重启 Argo 隧道 ..."
+        argo_svc_restart >/dev/null 2>&1 || warn "Argo 重启失败，可到主菜单 12 手动重启"
+    fi
+}
+lowmem_apply(){
+    local lim
+    lim="$(_go_mem_limit)"
+    if ! write_go_env; then warn "写 ${BASE}/go-env 失败，设置未生效"; return 1; fi
+    if [ -n "$lim" ]; then ok "低内存模式已开启：Go 堆软上限 ${lim}MiB"
+    else ok "低内存模式已关闭：不限制 Go 堆"; fi
+    echo "    环境变量写在 ${BASE}/go-env，服务每次启动都会重读。"
+    if service_alive && _ask "  现在重启 sing-box 使其生效？[Y/n] "; then
+        case "${_ASK_VALUE:-Y}" in n|N|no|NO) echo "    已跳过；可在主菜单 8 → 2 手动重启" ;;
+            *) lowmem_restart ;; esac
+    else
+        echo "    重启服务后生效（主菜单 8 → 2，或本菜单第 5 项）。"
+    fi
+}
+lowmem_menu(){
+  while :; do
+    clear
+    mem_report
+    echo "  ${BOLD}操作${RESET}"
+    echo "    1. 开启低内存模式  ${DIM}（Go 堆软上限）${RESET}"
+    echo "    2. 关闭低内存模式  ${DIM}（恢复官方默认）${RESET}"
+    echo "    3. 自定义堆上限    ${DIM}（留空 = 按物理内存自动算）${RESET}"
+    echo "    4. 把当前配置日志级别设为 warn"
+    echo "    5. 重启 sing-box / Argo 使设置生效"
+    echo "    0. 返回"
+    echo
+    if ! _ask "  请选择： "; then pause; return; fi
+    case "${_ASK_VALUE:-}" in
+      1) LOW_MEM_MODE=1; save_settings; lowmem_apply; pause ;;
+      2) LOW_MEM_MODE=0; save_settings; lowmem_apply; pause ;;
+      3)
+        if _ask "  堆上限 MiB（16~1024，留空 = 自动）： "; then
+            local _v="${_ASK_VALUE:-}"
+            case "$_v" in
+              '') GO_MEM_LIMIT_MB=""; ok "已恢复自动计算" ;;
+              *[!0-9]*) warn "请输入纯数字" ;;
+              *)
+                if [ "$_v" -ge 16 ] 2>/dev/null && [ "$_v" -le 1024 ] 2>/dev/null; then
+                    GO_MEM_LIMIT_MB="$_v"; ok "已设为 ${_v}MiB"
+                else warn "范围应为 16~1024"; fi ;;
+            esac
+            save_settings; lowmem_apply
+        fi
+        pause ;;
+      4) lowmem_set_loglevel; pause ;;
+      5) lowmem_restart; pause ;;
+      0|"") return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
 install_service(){
+    write_go_env || true
+    local _nofile=1048576
+    [ "${LOW_MEM_MODE:-0}" = "1" ] && _nofile=65535
     if [ "$INIT" = systemd ]; then
 cat >/etc/systemd/system/sing-box.service <<EOF
 [Unit]
@@ -1893,7 +2097,11 @@ Type=simple
 ExecStart=$BIN run -c $CONF
 Restart=on-failure
 RestartSec=3
-LimitNOFILE=1048576
+LimitNOFILE=$_nofile
+# Go 堆软上限（低内存模式）。开头的 - 表示文件不存在也不报错；
+# systemd 每次启动都会重读它，所以菜单里切换模式后重启服务即可生效，
+# 不需要重建 unit。详见 write_go_env 的注释。
+EnvironmentFile=-${BASE}/go-env
 # 同时写文件：脚本里多处提示「请查看 $LOGDIR/sing-box.log」，
 # 若只走 journald 那个文件就是空的，用户按提示去看什么都找不到。
 StandardOutput=append:$LOGDIR/sing-box.log
@@ -1908,6 +2116,14 @@ EOF
     elif [ "$INIT" = openrc ]; then
 cat >/etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
+# 低内存模式：与 systemd 共用同一份 go-env。文件里是纯 KEY=VALUE，
+# source 之后显式 export 才会传给 command_background 拉起的子进程。
+# unset 是防止菜单进程里残留旧值；文件缺失时 [ -r ] 短路，不报错。
+unset GOMEMLIMIT
+if [ -r "${BASE}/go-env" ]; then
+    . "${BASE}/go-env"
+    [ -n "\${GOMEMLIMIT:-}" ] && export GOMEMLIMIT
+fi
 command="$BIN"
 command_args="run -c $CONF"
 command_background="yes"
@@ -5169,6 +5385,13 @@ argo_write_runner(){
 #!/bin/sh
 # 由 sing-box NAT 生成，请勿手改。
 # 作用：把 cloudflared 的输出统一写进日志（临时隧道要靠它抓域名）。
+# cloudflared 也是 Go 程序，和 sing-box 共用同一份 go-env 堆上限；
+# 每次启动 runner 都会重读，切换低内存模式后重启隧道即可生效。
+unset GOMEMLIMIT
+if [ -r "${BASE}/go-env" ]; then
+    . "${BASE}/go-env"
+    [ -n "\${GOMEMLIMIT:-}" ] && export GOMEMLIMIT
+fi
 exec ${exec_line} >>"${ARGO_LOG}" 2>&1
 EOF
     chmod 700 "${BASE}/argo-run.sh" 2>/dev/null
@@ -6403,6 +6626,7 @@ service_menu(){
     echo "3. 停止"
     echo "4. 启动"
     echo "5. 检查配置"
+    echo "6. 内存体检 / 低内存模式  ${DIM}（小内存 NAT 机器建议看看）${RESET}"
     echo "0. 返回"
     read -r -p "请选择： " x || x=""
     case "$x" in
@@ -6411,6 +6635,7 @@ service_menu(){
       3) if [ "$INIT" = systemd ]; then systemctl stop sing-box; elif [ "$INIT" = openrc ]; then rc-service sing-box stop; fi; pause ;;
       4) if [ "$INIT" = systemd ]; then systemctl start sing-box; elif [ "$INIT" = openrc ]; then rc-service sing-box start; fi; pause ;;
       5) validate; pause ;;
+      6) lowmem_menu ;;
       0) return ;;
       *) warn "无效选项"; sleep 1 ;;
     esac
@@ -6953,6 +7178,14 @@ system_info(){
     _pc_all="$(_sys_proc_total)"; [ -n "$_pc_all" ] || _pc_all="${DIM}—${RESET}"
     kv "进程数量" "sing-box ${_pc_sb}   nginx ${_pc_ng}   系统 ${_pc_all}"
     hr
+    local _mt _ma _ms
+    _mt="$(_sys_mem_total_mb)"; _ma="$(_sys_mem_avail_mb)"; _ms="$(_sys_swap_total_mb)"
+    case "$_mt" in ''|*[!0-9]*) _mt="?" ;; esac
+    case "$_ma" in ''|*[!0-9]*) _ma="?" ;; esac
+    case "$_ms" in ''|*[!0-9]*) _ms=0 ;; esac
+    kv "物理内存" "${_mt} MiB   可用 ${_ma} MiB   Swap ${_ms} MiB"
+    kv "低内存模式" "$([ "${LOW_MEM_MODE:-0}" = "1" ] && echo "${GREEN}已开启${RESET}（Go 堆软上限 $(_go_mem_limit) MiB）" || echo "未开启   ${DIM}入口：主菜单 8 → 6${RESET}")"
+    hr
     kv "系统" "$OS $VER"
     kv "架构" "$(uname -m) -> $ARCH"
     kv "Init" "$INIT"
@@ -7098,10 +7331,11 @@ choose_install_channel(){
     echo "       ${DIM}HTTP/2 显式声明、HTTP/3 都要 1.15.0+，只有这条路装得到${RESET}"
     echo "    ${BOLD}2.${RESET} 正式版（stable）           ${DIM}最稳，取官方 /latest${RESET}"
     echo "       ${DIM}官方正式线目前停在 1.14.x，装它就用不了 HTTP/3${RESET}"
+    echo "  ${DIM}必须输入 1 或 2 后回车；只按回车 / 空输入不算选择。${RESET}"
     echo
     while [ "$_try" -lt 3 ]; do
-        if [ "$_pre" = "stable" ]; then _def="2"; _prompt="  请选择 [2]： "
-        else _def="1"; _prompt="  请选择 [1]： "; fi
+        if [ "$_pre" = "stable" ]; then _def="2"; else _def="1"; fi
+        _prompt="  请输入 1 或 2（建议 $_def）： "
         if ! _ask "$_prompt"; then
             if [ "${SB_ASSUME_DEFAULTS:-0}" = "1" ]; then
                 _ch="${INSTALL_CHANNEL_PRESET:-$_pre}"
@@ -7118,15 +7352,27 @@ choose_install_channel(){
             echo "  无人值守请显式声明：SB_ASSUME_DEFAULTS=1 SINGBOX_CHANNEL=stable bash sb.sh"
             return 1
         fi
-        _a="${_ASK_VALUE:-$_def}"
-        [ -n "$_ASK_VALUE" ] || echo "  ${DIM}（直接回车，使用默认 $_def）${RESET}"
+        _a="$_ASK_VALUE"
         case "$_a" in
             1|any|latest) _ch="any"; break ;;
             2|stable)     _ch="stable"; break ;;
+            '')
+                warn "只收到空输入（可能只是按了回车），请明确输入 1 或 2"
+                _try=$((_try + 1)) ;;
             *) warn "请输入 1 或 2"; _try=$((_try + 1)) ;;
         esac
     done
-    [ -n "$_ch" ] || { _ch="$_pre"; warn "三次输入无效，沿用预置频道 $_ch"; }
+    [ -n "$_ch" ] || {
+        if [ "${SB_ASSUME_DEFAULTS:-0}" = "1" ]; then
+            _ch="$_pre"; warn "无人值守：沿用预置频道 $_ch"
+        else
+            echo
+            warn "没有取得有效的内核版本选择，安装已停止（未做任何改动）"
+            echo "  请重新运行 bash sb.sh，在提示处输入 1 或 2 再回车。"
+            echo "  无人值守请用：SB_ASSUME_DEFAULTS=1 SINGBOX_CHANNEL=stable bash sb.sh"
+            return 1
+        fi
+    }
     INSTALL_CHANNEL_CHOICE="$_ch"
     if [ "$_ch" = "stable" ]; then _label="正式版（stable）"
     else _label="最新版（含 alpha/beta）"; fi
@@ -7134,7 +7380,7 @@ choose_install_channel(){
     return 0
 }
 confirm_install(){
-    local _cl=""
+    local _cl="" _mt0=""
     echo
     panel "安装确认"
     echo "  即将在本机安装 Sing-box NAT ${BOLD}${VERSION}${RESET}："
@@ -7143,6 +7389,14 @@ confirm_install(){
     echo "    ${DIM}安装目录${RESET}  ${BASE}"
     echo "    ${DIM}内核程序${RESET}  ${BIN}"
     echo "    ${DIM}管理命令${RESET}  sb"
+    _mt0="$(_sys_mem_total_mb)"
+    case "$_mt0" in ''|*[!0-9]*) _mt0="" ;; esac
+    if [ -n "$_mt0" ]; then
+        echo "    ${DIM}物理内存${RESET}  ${_mt0} MiB"
+        if [ "$_mt0" -le 512 ] 2>/dev/null; then
+            echo "  ${DIM}小内存机器：首次安装会自动开启低内存模式（Go 堆软上限 + warn 日志），装好后可在「服务管理 → 6」关闭。${RESET}"
+        fi
+    fi
     echo
     echo "  ${DIM}安装过程会自动补装所需依赖（curl / jq / openssl 等）。${RESET}"
     echo "  ${DIM}订阅服务默认不开 —— 装好后需要时再到菜单里自行选择并启动。${RESET}"
@@ -7151,20 +7405,31 @@ confirm_install(){
     echo
     if [ "$INSTALL_CHANNEL_CHOICE" = "stable" ]; then _cl="正式版（stable）"
     else _cl="最新版（含 alpha/beta）"; fi
-    if ! _ask "  确认安装（内核：${_cl}）？[Y/n] "; then
-        if [ "${SB_ASSUME_DEFAULTS:-0}" = "1" ]; then
+    local _ok=0 _n=0 _v
+    while [ "$_n" -lt 3 ]; do
+        if ! _ask "  确认安装（内核：${_cl}）？输入 y 继续 / n 取消： "; then
+            if [ "${SB_ASSUME_DEFAULTS:-0}" = "1" ]; then
+                echo
+                warn "无人值守模式：读不到交互输入，按默认确认继续安装"
+                return 0
+            fi
             echo
-            warn "无人值守模式：读不到交互输入，按默认确认继续安装"
-            return 0
+            warn "没能读到安装确认，安装已停止（未做任何改动）"
+            return 1
         fi
-        echo
-        warn "没能读到安装确认，安装已停止（未做任何改动）"
+        _v="$_ASK_VALUE"
+        case "$_v" in
+            y|Y|yes|YES) _ok=1; break ;;
+            n|N|no|NO)   _ok=0; break ;;
+            '') warn "只收到空输入，请明确输入 y 继续或 n 取消"; _n=$((_n + 1)) ;;
+            *)  warn "请输入 y 或 n"; _n=$((_n + 1)) ;;
+        esac
+    done
+    if [ "$_ok" != "1" ]; then
+        [ "$_n" -ge 3 ] && warn "三次输入无效，安装已取消（未做任何改动）"
         return 1
     fi
-    case "${_ASK_VALUE:-Y}" in
-        y|Y|yes|YES|"") return 0 ;;
-        *) return 1 ;;
-    esac
+    return 0
 }
 initial_install(){
     need_root
@@ -7177,10 +7442,20 @@ initial_install(){
     install_deps
     progress 30 "创建目录与默认配置"
     mkdir -p "$BASE" "$CERTDIR" "$SUBDIR" "$BACKUP" "$LOGDIR"
+    local _fresh=0 _mt1=""
+    [ -f "$SETTINGS" ] || _fresh=1
     load_settings
     if [ -n "${INSTALL_CHANNEL_CHOICE:-}" ]; then
         SINGBOX_CHANNEL="$INSTALL_CHANNEL_CHOICE"
         SINGBOX_WANT_VERSION=""
+    fi
+    if [ "$_fresh" = "1" ]; then
+        _mt1="$(_sys_mem_total_mb)"
+        case "$_mt1" in ''|*[!0-9]*) _mt1="" ;; esac
+        if [ -n "$_mt1" ] && [ "$_mt1" -le 512 ] 2>/dev/null; then
+            LOW_MEM_MODE=1
+            info "检测到 ${_mt1} MiB 小内存，已自动开启低内存模式"
+        fi
     fi
     save_settings
     init_files
