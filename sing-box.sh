@@ -7862,39 +7862,75 @@ _apk_init_backup(){
     fi
     return 0
 }
+# 返回当前容器可用内存（MiB）；优先读取 cgroup 限额，兼容 v1/v2。
+_apk_memory_available_mb(){
+    local v="" n=""
+    if [ -r /sys/fs/cgroup/memory.max ]; then
+        v="$(cat /sys/fs/cgroup/memory.max 2>/dev/null)"
+        case "$v" in
+            ''|max) ;;
+            *[!0-9]*) ;;
+            *) n=$((v / 1048576)) ;;
+        esac
+    fi
+    if [ -z "$n" ] && [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+        v="$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null)"
+        case "$v" in
+            ''|*[!0-9]*) ;;
+            *) [ "$v" -lt 9000000000000000000 ] 2>/dev/null && n=$((v / 1048576)) ;;
+        esac
+    fi
+    if [ -z "$n" ] && [ -r /proc/meminfo ]; then
+        v="$(awk '/^MemAvailable:/ {print int($2/1024); exit}' /proc/meminfo)"
+        case "$v" in ''|*[!0-9]*) ;; *) n="$v" ;; esac
+    fi
+    printf '%s' "${n:-}"
+}
 install_singbox_from_apk(){
     _apk_available || { warn "本机不是 Alpine 或没有 apk，无法使用系统包版"; return 1; }
     local _log="${LOGDIR:-/tmp}/apk-install.log" _sysbin="" _ver=""
-    local _rc=1 _repo="" _n=0
+    local _rc=1 _repo="" _n=0 _mem=""
     info "正在从 Alpine 软件源安装 sing-box（不访问 GitHub）..."
     : > "$_log" 2>/dev/null || _log="/tmp/singbox-nat-apk.log"
-    if [ "${APK_USE_EDGE:-0}" = "1" ]; then
-        apk update >>"$_log" 2>&1 || true
-        for _repo in "$APK_EDGE_REPO" "${APK_EDGE_REPO_ALT:-}"; do
-            [ -n "$_repo" ] || continue
-            _n=$((_n + 1))
-            [ "$_n" -gt 1 ] && printf '\n---- 主源失败，改用备用地址 %s ----\n' "$_repo" >>"$_log"
-            if apk add --repository="$_repo" sing-box >>"$_log" 2>&1; then _rc=0; break; fi
-        done
-    else
-        if apk add --no-cache sing-box >"$_log" 2>&1; then _rc=0; fi
-    fi
-    if [ "$_rc" != "0" ]; then
-        if [ "${APK_USE_EDGE:-0}" = "1" ]; then
-            warn "从 Alpine Edge 源安装 sing-box 失败"
-        else
-            warn "apk 安装 sing-box 失败（软件源里没有该包 / 网络不可达 / 索引过期）"
-            echo  "    稳定分支通常不含此包；重跑选 3 会自动用 Edge 源，或选 1/2 走 GitHub"
+    _mem="$(_apk_memory_available_mb)"
+    if [ -n "$_mem" ]; then
+        info "检测到容器内存限额/可用内存约 ${_mem} MiB"
+        if [ "$_mem" -lt 160 ]; then
+            warn "当前内存低于 160 MiB，apk 解包可能触发 OOM；本次将禁用无意义的重复源重试"
         fi
-        echo  "    安装日志：$_log"
-        echo  "    ---- 日志末尾 ----"
-        tail -n 12 "$_log" 2>/dev/null | sed 's/^/    /' || true
-        if grep -q 'Installing sing-box' "$_log" 2>/dev/null && ! grep -q '^OK:' "$_log" 2>/dev/null; then
+    fi
+
+    if [ "${APK_USE_EDGE:-0}" = "1" ]; then
+        # 不再先执行 apk update：它会额外下载/解析索引，增加低内存机器的峰值。
+        # --no-cache 避免写本地索引缓存；--no-progress 减少终端/日志开销。
+        _repo="${APK_EDGE_REPO_ALT:-https://dl-cdn.alpinelinux.org/alpine/edge/community}"
+        apk add --no-cache --no-progress --repository="$_repo" sing-box >>"$_log" 2>&1
+        _rc=$?
+        # 只有非 OOM 的网络/仓库错误才尝试备用协议；OOM 后重试同一包只会再次被杀。
+        if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 137 ] && [ -n "${APK_EDGE_REPO:-}" ] && [ "$APK_EDGE_REPO" != "$_repo" ]; then
+            printf '\n---- 非 OOM 错误，改用备用地址 %s ----\n' "$APK_EDGE_REPO" >>"$_log"
+            apk add --no-cache --no-progress --repository="$APK_EDGE_REPO" sing-box >>"$_log" 2>&1
+            _rc=$?
+        fi
+    else
+        apk add --no-cache --no-progress sing-box >"$_log" 2>&1
+        _rc=$?
+    fi
+
+    if [ "$_rc" -ne 0 ]; then
+        if [ "${APK_USE_EDGE:-0}" = "1" ]; then
+            warn "从 Alpine Edge 源安装 sing-box 失败（退出码：$_rc）"
+        else
+            warn "apk 安装 sing-box 失败（退出码：$_rc；可能是软件源、网络或内存问题）"
+        fi
+        echo "    安装日志：$_log"
+        echo "    ---- 日志末尾 ----"
+        tail -n 16 "$_log" 2>/dev/null | sed 's/^/    /' || true
+        if [ "$_rc" -eq 137 ] || grep -Eqi 'out of memory|oom-kill|oom killer|killed process|memory cgroup out of memory' "$_log" 2>/dev/null; then
             echo
-            warn "看日志像是 apk 装到一半被系统杀掉（小内存机器内存不足 / OOM）"
-            echo  "    GOMEMLIMIT（低内存模式）只约束 sing-box 运行时，管不到 apk 安装这一步。"
-            echo  "    这种机器更省内存的办法：重跑并在确认屏选 1，用 GitHub 单文件二进制，"
-            echo  "    它不像 apk 要解压包 / 跑 trigger / 写 apk 数据库，内存峰值低得多。"
+            warn "已识别到进程被 SIGKILL/OOM 的迹象；已停止重试，避免再次耗尽 NAT 容器内存。"
+            echo "    低内存模式的 GOMEMLIMIT 只限制 sing-box 运行时，不限制 apk 安装过程。"
+            echo "    48–128 MiB 容器建议先配置至少 256 MiB Swap（若服务商允许），再重试 APK 安装。"
         fi
         return 1
     fi
