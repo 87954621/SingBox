@@ -454,6 +454,17 @@ install_deps(){
         ok "必需依赖齐全，本次不安装任何系统包"
         return 0
     fi
+    if [ "$OS" = "alpine" ]; then
+        local _apk_lim=""
+        _apk_lim="$(_apk_memory_limit_mb 2>/dev/null)"
+        case "$_apk_lim" in
+            ''|*[!0-9]*) ;;
+            *)
+                if [ "$_apk_lim" -lt 96 ]; then
+                    die "容器内存上限仅 ${_apk_lim} MiB，且必需依赖缺失（$_pkgs）。为避免 apk 再次触发 OOM，已停止自动补装；请先提高容器内存或由宿主机开放 Swap。"
+                fi ;;
+        esac
+    fi
     info "本次只需补装必需依赖：$_pkgs"
     echo "  ${DIM}二维码 / dig / ss 等可选依赖不在开局安装：用到时会先问你 y/N。${RESET}"
     run_with_timeout 300 _pkg_install_core "$_pkgs" >/dev/null 2>&1 || true
@@ -7551,12 +7562,10 @@ choose_install_channel(){
                 elif [ "$_apk_ok" = "1" ]; then
                     _ch="apk"; APK_EDGE_CHOICE=0; break
                 else
-                    _edge_ver="$(_apk_edge_pkg_version 2>/dev/null)" || _edge_ver=""
-                    if [ -n "$_edge_ver" ]; then
-                        _ch="apk"; APK_EDGE_CHOICE=1; break
-                    fi
-                    warn "稳定源和 Edge 源都查不到 sing-box，选项 3 本次不可用；请选 1 或 2"
-                    _try=$((_try + 1))
+                    # 低内存容器中禁止在选择菜单阶段反复 apk search/update。
+                    # 直接将安装交给一次 apk add，由它验证仓库中是否存在包。
+                    _edge_ver="安装时由 APK 仓库确认"
+                    _ch="apk"; APK_EDGE_CHOICE=1; break
                 fi ;;
             '')
                 warn "只收到空输入（可能只是按了回车），请明确输入 $_range"
@@ -7578,7 +7587,7 @@ choose_install_channel(){
     if [ "$_ch" = "apk" ]; then
         INSTALL_CHANNEL_CHOICE=""
         INSTALL_SOURCE_CHOICE="apk"
-        if [ "${APK_EDGE_CHOICE:-0}" = "1" ]; then _label="Alpine 系统包版（Edge 源 ${_edge_ver}）"
+        if [ "${APK_EDGE_CHOICE:-0}" = "1" ]; then _label="Alpine 系统包版（Edge 源，安装时检查）"
         else _label="Alpine 系统包版（apk ${_apk_ver}）"; fi
     else
         INSTALL_CHANNEL_CHOICE="$_ch"
@@ -7812,17 +7821,10 @@ _apk_available(){
 _apk_pkg_version(){
     _apk_available || return 1
     local out="" v=""
-    out="$(run_with_timeout 12 apk search -x sing-box 2>/dev/null)" || out=""
+    # 只读取本地已有索引；绝不在菜单探测阶段执行 apk update。
+    # 缺少索引/包时，后续一次性 apk add 会直接处理，不在这里重复下载索引。
+    out="$(apk search -x sing-box 2>/dev/null)" || out=""
     v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
-    if [ -z "$v" ]; then
-        run_with_timeout 25 apk update >/dev/null 2>&1 || true
-        out="$(run_with_timeout 12 apk search -x sing-box 2>/dev/null)" || out=""
-        v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
-    fi
-    if [ -z "$v" ]; then
-        out="$(run_with_timeout 12 apk policy sing-box 2>/dev/null)" || out=""
-        v="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]\{1,\}\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\):[[:space:]]*$/\1/p' | head -n1)"
-    fi
     [ -n "$v" ] || return 1
     printf '%s\n' "$v"
 }
@@ -7832,22 +7834,6 @@ _apk_pkg_version_cached(){
         APK_PKG_VER="$(_apk_pkg_version 2>/dev/null)" || APK_PKG_VER=""
     fi
     printf '%s' "${APK_PKG_VER:-}"
-}
-_apk_edge_pkg_version(){
-    _apk_available || return 1
-    local repo out="" v=""
-    for repo in "$APK_EDGE_REPO" "${APK_EDGE_REPO_ALT:-}"; do
-        [ -n "$repo" ] || continue
-        out="$(run_with_timeout 45 apk search -x -X "$repo" sing-box 2>/dev/null)" || out=""
-        v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
-        if [ -z "$v" ]; then
-            run_with_timeout 45 apk update -X "$repo" >/dev/null 2>&1 || true
-            out="$(run_with_timeout 20 apk search -x -X "$repo" sing-box 2>/dev/null)" || out=""
-            v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
-        fi
-        [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
-    done
-    return 1
 }
 _apk_init_backup(){
     [ "${INIT:-none}" = openrc ] || return 0
@@ -7862,8 +7848,8 @@ _apk_init_backup(){
     fi
     return 0
 }
-# 返回当前容器可用内存（MiB）；优先读取 cgroup 限额，兼容 v1/v2。
-_apk_memory_available_mb(){
+# 返回当前容器内存上限（MiB）；优先读取 cgroup 限额，兼容 v1/v2。
+_apk_memory_limit_mb(){
     local v="" n=""
     if [ -r /sys/fs/cgroup/memory.max ]; then
         v="$(cat /sys/fs/cgroup/memory.max 2>/dev/null)"
@@ -7889,14 +7875,21 @@ _apk_memory_available_mb(){
 install_singbox_from_apk(){
     _apk_available || { warn "本机不是 Alpine 或没有 apk，无法使用系统包版"; return 1; }
     local _log="${LOGDIR:-/tmp}/apk-install.log" _sysbin="" _ver=""
-    local _rc=1 _repo="" _n=0 _mem=""
+    local _rc=1 _repo="" _mem="" _swap_max=""
     info "正在从 Alpine 软件源安装 sing-box（不访问 GitHub）..."
     : > "$_log" 2>/dev/null || _log="/tmp/singbox-nat-apk.log"
-    _mem="$(_apk_memory_available_mb)"
+    _mem="$(_apk_memory_limit_mb)"
+    if [ -r /sys/fs/cgroup/memory.swap.max ]; then
+        _swap_max="$(cat /sys/fs/cgroup/memory.swap.max 2>/dev/null)"
+    fi
     if [ -n "$_mem" ]; then
-        info "检测到容器内存限额/可用内存约 ${_mem} MiB"
-        if [ "$_mem" -lt 160 ]; then
-            warn "当前内存低于 160 MiB，apk 解包可能触发 OOM；本次将禁用无意义的重复源重试"
+        info "检测到容器内存上限约 ${_mem} MiB"
+        if [ "$_mem" -lt 96 ]; then
+            warn "容器内存上限低于 96 MiB，APK 解包很可能再次触发 OOM；为避免反复打满 CPU/内存，本次停止安装。"
+            echo "    请先让服务商提高内存上限，或由宿主机管理员开放 Swap 配额后再安装。"
+            return 1
+        elif [ "$_mem" -lt 160 ]; then
+            warn "当前内存低于 160 MiB，APK 解包仍有 OOM 风险；已关闭菜单阶段的索引更新和 Edge 预扫描。"
         fi
     fi
 
@@ -7930,7 +7923,12 @@ install_singbox_from_apk(){
             echo
             warn "已识别到进程被 SIGKILL/OOM 的迹象；已停止重试，避免再次耗尽 NAT 容器内存。"
             echo "    低内存模式的 GOMEMLIMIT 只限制 sing-box 运行时，不限制 apk 安装过程。"
-            echo "    48–128 MiB 容器建议先配置至少 256 MiB Swap（若服务商允许），再重试 APK 安装。"
+            if [ "$_swap_max" = "0" ]; then
+                echo "    当前 cgroup 的 memory.swap.max=0，容器被禁止使用 Swap；容器内创建 Swap 文件无法绕过此限制。"
+                echo "    可行方向：请服务商/宿主机将容器内存上限提高到至少 256 MiB，或允许配置 Swap 后再安装。"
+            else
+                echo "    可行方向：提高容器内存上限（建议至少 256 MiB），或在宿主机/服务商允许时配置 Swap 后再安装。"
+            fi
         fi
         return 1
     fi
