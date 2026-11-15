@@ -75,11 +75,14 @@ CLASH_RULE_MODE="full"
 PREFERRED_SNI=""; SNI_OPTIMIZED=""
 NODE_NAME_PREFIX=""
 SINGBOX_CHANNEL="${SINGBOX_CHANNEL:-any}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-github}"
+INSTALL_CHANNEL_CHOICE=""; INSTALL_CHANNEL_PRESET=""; INSTALL_SOURCE_CHOICE=""
+APK_PKG_VER=""; APK_PKG_VER_CHECKED=0
 DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.18"
+VERSION="V3.9.19"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -802,6 +805,10 @@ load_settings(){
         stable|pre|any) : ;;
         *) SINGBOX_CHANNEL="any" ;;
     esac
+    case "${INSTALL_SOURCE:-github}" in
+        github|apk) INSTALL_SOURCE="$INSTALL_SOURCE" ;;
+        *) INSTALL_SOURCE="github" ;;
+    esac
     DEFAULT_NEWEST_VERSION="${DEFAULT_NEWEST_VERSION:-1.15.0-alpha.9}"
     SINGBOX_WANT_VERSION="${SINGBOX_WANT_VERSION:-}"
     SUBHTTP_ENABLED="${SUBHTTP_ENABLED:-0}"
@@ -834,6 +841,7 @@ PREFERRED_SNI=$PREFERRED_SNI
 NODE_NAME_PREFIX=$NODE_NAME_PREFIX
 SINGBOX_CHANNEL=$SINGBOX_CHANNEL
 SINGBOX_WANT_VERSION=$SINGBOX_WANT_VERSION
+INSTALL_SOURCE=$INSTALL_SOURCE
 DEFAULT_NEWEST_VERSION=$DEFAULT_NEWEST_VERSION
 SUBHTTP_ENABLED=$SUBHTTP_ENABLED
 SUBHTTP_LISTEN=$SUBHTTP_LISTEN
@@ -1618,6 +1626,11 @@ http_version_supported(){
 }
 ensure_http_version(){
     http_version_supported && return 0
+    if [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
+        warn "当前是 Alpine 系统包版 sing-box $(sb_version)，不含 http.version 字段（需 1.15.0+）"
+        echo "  ${DIM}HTTP/3 无法使用；HTTP/2 会按兼容模式创建。要全套协议请到「sing-box 管理 → 2」换官方二进制。${RESET}"
+        return 1
+    fi
     if [ "${BATCH_MODE:-0}" = "1" ]; then
         return 1
     fi
@@ -2135,6 +2148,7 @@ EOF
         systemctl daemon-reload
         systemctl enable sing-box >/dev/null 2>&1 || true
     elif [ "$INIT" = openrc ]; then
+        _apk_init_backup
 cat >/etc/init.d/sing-box <<EOF
 #!/sbin/openrc-run
 # 低内存模式：与 systemd 共用同一份 go-env。文件里是纯 KEY=VALUE，
@@ -2164,7 +2178,7 @@ upgrade_singbox(){
     clear
     panel "升级 / 切换 sing-box 内核"
     need_root
-    local cur rel tag a bak want lat_any lat_stable
+    local cur rel tag a bak want lat_any lat_stable _sw
     cur="$(sb_version)"
     if [ -n "$cur" ]; then kv "当前版本" "$cur"
     else kv "当前版本" "${RED}未安装${RESET}"; fi
@@ -2174,11 +2188,17 @@ upgrade_singbox(){
         kv "HTTP/3 支持" "${YELLOW}需升级到 1.15.0+${RESET}"
     fi
     kv "默认频道" "${SINGBOX_CHANNEL:-any}"
+    if [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
+        kv "内核来源" "${YELLOW}Alpine 系统包版（apk）${RESET}"
+        echo "  ${DIM}下面 1~4 会切回 GitHub 官方二进制（$BIN 软链被替换）；5 保持系统包版。${RESET}"
+    else
+        kv "内核来源" "GitHub 官方二进制"
+    fi
 
     info "正在查询可用版本 ..."
-    SINGBOX_CHANNEL=any; rel="$(fetch_singbox_release)"
+    rel="$(SINGBOX_CHANNEL=any fetch_singbox_release)"
     lat_any="$(printf '%s' "$rel" | cut -f1)"
-    SINGBOX_CHANNEL=stable; rel="$(fetch_singbox_release)"
+    rel="$(SINGBOX_CHANNEL=stable fetch_singbox_release)"
     lat_stable="$(printf '%s' "$rel" | cut -f1)"
     case "$lat_any" in null) lat_any="" ;; esac
     case "$lat_stable" in null) lat_stable="" ;; esac
@@ -2199,6 +2219,9 @@ upgrade_singbox(){
     fi
     printf '  %s3.%s 从列表里挑一个版本\n' "$BOLD" "$RESET"
     printf '  %s4.%s 手动输入版本号（可回退旧版）\n' "$BOLD" "$RESET"
+    if _apk_available; then
+        printf '  %s5.%s 改用 Alpine 系统包版（apk，版本由软件源决定）\n' "$BOLD" "$RESET"
+    fi
     printf '  %s0.%s 返回\n' "$BOLD" "$RESET"
     echo
     read -r -p "请选择： " u || u=""
@@ -2253,6 +2276,24 @@ upgrade_singbox(){
                 warn "版本号格式不合法：$want"; pause; return 1
             fi
             _want_ch="" ;;
+        5)
+            _apk_available || { warn "选项 5 仅 Alpine 可用"; pause; return 1; }
+            echo
+            warn "系统包版由软件源决定版本（通常明显落后），装不了 HTTP/3"
+            read -r -p "  确认切换？输入 y 继续 / n 取消： " _sw || _sw=""
+            case "$_sw" in y|Y|yes|YES) ;; *) info "已取消"; pause; return 0 ;; esac
+            bak="${BIN}.bak"
+            [ -x "$BIN" ] && cp -f "$BIN" "$bak" 2>/dev/null || true
+            if ! install_singbox_from_apk; then
+                [ -x "$bak" ] && mv -f "$bak" "$BIN" 2>/dev/null || true
+                warn "已回滚到切换前的内核"
+                pause; return 1
+            fi
+            rm -f "$bak" 2>/dev/null || true
+            INSTALL_SOURCE="apk"; SINGBOX_WANT_VERSION=""
+            save_settings
+            apply || warn "重启失败，请到「服务管理」手动重启"
+            pause; return 0 ;;
         0) return 0 ;;
         *) warn "无效选项"; pause; return 1 ;;
     esac
@@ -2279,6 +2320,7 @@ upgrade_singbox(){
         SINGBOX_CHANNEL="$_want_ch"
         SINGBOX_WANT_VERSION=""
     fi
+    INSTALL_SOURCE="github"
     save_settings
     backup
     progress 20 "备份当前内核"
@@ -6774,18 +6816,25 @@ remove_singbox_bin(){
 reinstall_singbox_bin(){
     panel "重装 sing-box 内核"
     local cur; cur="$(sb_version)"
+    local _rc=0
     kv "当前版本" "${cur:-未安装}"
-    kv "下载渠道" "$(_channel_label)"
+    kv "内核来源" "$(_channel_label)"
     hr
-    echo "将重新下载内核并覆盖 $BIN，配置与节点不受影响。"
+    echo "将重新安装内核并覆盖 $BIN，配置与节点不受影响。"
     read -r -p "确认重装？[Y/n] " x || x=""
     case "${x:-Y}" in n|N) info "已取消"; pause; return ;; esac
     backup
     local bak="${BIN}.bak"
     [ -x "$BIN" ] && cp -f "$BIN" "$bak" 2>/dev/null || true
-    progress 30 "下载 sing-box ${cur:-最新版}"
-    if ! download_singbox "${cur:-}"; then
-        warn "下载失败，保持原状态"
+    if [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
+        progress 30 "重装 Alpine 系统包版 sing-box"
+        install_singbox_from_apk || _rc=1
+    else
+        progress 30 "下载 sing-box ${cur:-最新版}"
+        download_singbox "${cur:-}" || _rc=1
+    fi
+    if [ "$_rc" != "0" ]; then
+        warn "重装失败，保持原状态"
         [ -x "$bak" ] && mv -f "$bak" "$BIN" 2>/dev/null || true
         pause; return 1
     fi
@@ -7240,6 +7289,10 @@ uninstall(){
     elif command -v cloudflared >/dev/null 2>&1; then
         echo "        ${DIM}cloudflared 是本脚本之外装的，稍后会问你要不要一并卸载。${RESET}"
     fi
+    if [ -L "$BIN" ] || [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
+        echo "  ${YELLOW}⚠ 内核来自 Alpine 软件源：只删除本脚本创建的 $BIN 软链，系统包不会被动。${RESET}"
+        echo "  ${DIM}  确实要连系统包一起卸载，请自行执行：apk del sing-box sing-box-openrc${RESET}"
+    fi
     echo "不会主动修改系统已有防火墙规则。"
     read -r -p "输入 DELETE 确认： " x || x=""
     [ "$x" = DELETE ] || { echo "已取消"; pause; return; }
@@ -7252,7 +7305,13 @@ uninstall(){
     elif [ "$INIT" = openrc ]; then
         rc-service sing-box stop >/dev/null 2>&1 || true
         rc-update del sing-box default >/dev/null 2>&1 || true
-        rm -f /etc/init.d/sing-box
+        if [ -f "${BASE}/init-from-apk.bak" ]; then
+            cp -f "${BASE}/init-from-apk.bak" /etc/init.d/sing-box 2>/dev/null || true
+            chmod +x /etc/init.d/sing-box 2>/dev/null || true
+            info "已还原 Alpine 软件包自带的 /etc/init.d/sing-box"
+        else
+            rm -f /etc/init.d/sing-box
+        fi
     fi
     pkill -f "$BIN run -c $CONF" 2>/dev/null || true
 
@@ -7345,23 +7404,39 @@ _ask(){
 }
 choose_install_channel(){
     local _pre="${INSTALL_CHANNEL_PRESET:-${SINGBOX_CHANNEL:-any}}" _a="" _try=0 _ch=""
-    local _def="" _prompt="" _label=""
+    local _def="" _prompt="" _label="" _apk_ver="" _apk_ok=0 _range="1 或 2"
     case "$_pre" in stable|pre) ;; *) _pre="any" ;; esac
-    echo "  ${BOLD}选择 sing-box 内核版本${RESET}"
-    echo "    ${BOLD}1.${RESET} 最新版（含 alpha/beta）  ${GREEN}← 推荐，功能最全${RESET}"
+    if _apk_available; then
+        _apk_ok=1; _range="1、2 或 3"
+        _apk_ver="$(_apk_pkg_version_cached)"
+    fi
+    echo "  ${BOLD}选择 sing-box 内核${RESET}"
+    echo "    ${BOLD}1.${RESET} 最新版（含 alpha/beta，GitHub）  ${GREEN}← 推荐，功能最全${RESET}"
     echo "       ${DIM}HTTP/2 显式声明、HTTP/3 都要 1.15.0+，只有这条路装得到${RESET}"
-    echo "    ${BOLD}2.${RESET} 正式版（stable）           ${DIM}最稳，取官方 /latest${RESET}"
+    echo "    ${BOLD}2.${RESET} 正式版（stable，GitHub）       ${DIM}最稳，取官方 /latest${RESET}"
     echo "       ${DIM}官方正式线目前停在 1.14.x，装它就用不了 HTTP/3${RESET}"
-    echo "  ${DIM}必须输入 1 或 2 后回车；只按回车 / 空输入不算选择。${RESET}"
+    if [ "$_apk_ok" = "1" ]; then
+        if [ -n "$_apk_ver" ]; then
+            echo "    ${BOLD}3.${RESET} Alpine 系统包版（apk 源：${GREEN}${_apk_ver}${RESET}）"
+        else
+            echo "    ${BOLD}3.${RESET} Alpine 系统包版（apk 源版本未查到，安装时取仓库最新）"
+            echo "       ${YELLOW}注意：稳定分支的仓库通常没有 sing-box（需 edge/community 源），选它可能装不上${RESET}"
+        fi
+        echo "       ${DIM}走 Alpine CDN，不碰 GitHub；版本较旧，用不了 HTTP/3${RESET}"
+        [ -x /usr/bin/sing-box ] && \
+            echo "  ${DIM}检测到系统已装 apk 包版 sing-box，选 3 会直接接管它。${RESET}"
+    fi
+    echo "  ${DIM}必须输入 $_range 后回车；只按回车 / 空输入不算选择。${RESET}"
     echo
     while [ "$_try" -lt 3 ]; do
         if [ "$_pre" = "stable" ]; then _def="2"; else _def="1"; fi
-        _prompt="  请输入 1 或 2（建议 $_def）： "
+        _prompt="  请输入 $_range（建议 $_def）： "
         if ! _ask "$_prompt"; then
             if [ "${SB_ASSUME_DEFAULTS:-0}" = "1" ]; then
                 _ch="${INSTALL_CHANNEL_PRESET:-$_pre}"
+                INSTALL_SOURCE_CHOICE="github"
                 echo
-                warn "无人值守模式：读不到交互输入，内核频道采用 $_ch"
+                warn "无人值守模式：读不到交互输入，内核采用 $_ch（GitHub 官方二进制）"
                 break
             fi
             echo
@@ -7377,26 +7452,36 @@ choose_install_channel(){
         case "$_a" in
             1|any|latest) _ch="any"; break ;;
             2|stable)     _ch="stable"; break ;;
+            3|apk|system)
+                if [ "$_apk_ok" = "1" ]; then _ch="apk"; break; fi
+                warn "选项 3 仅 Alpine 可用，请输入 1 或 2"; _try=$((_try + 1)) ;;
             '')
-                warn "只收到空输入（可能只是按了回车），请明确输入 1 或 2"
+                warn "只收到空输入（可能只是按了回车），请明确输入 $_range"
                 _try=$((_try + 1)) ;;
-            *) warn "请输入 1 或 2"; _try=$((_try + 1)) ;;
+            *) warn "请输入 $_range"; _try=$((_try + 1)) ;;
         esac
     done
     [ -n "$_ch" ] || {
         if [ "${SB_ASSUME_DEFAULTS:-0}" = "1" ]; then
-            _ch="$_pre"; warn "无人值守：沿用预置频道 $_ch"
+            _ch="$_pre"; INSTALL_SOURCE_CHOICE="github"; warn "无人值守：沿用预置频道 $_ch"
         else
             echo
-            warn "没有取得有效的内核版本选择，安装已停止（未做任何改动）"
-            echo "  请重新运行 bash sb.sh，在提示处输入 1 或 2 再回车。"
+            warn "没有取得有效的内核选择，安装已停止（未做任何改动）"
+            echo "  请重新运行 bash sb.sh，在提示处输入 $_range 再回车。"
             echo "  无人值守请用：SB_ASSUME_DEFAULTS=1 SINGBOX_CHANNEL=stable bash sb.sh"
             return 1
         fi
     }
-    INSTALL_CHANNEL_CHOICE="$_ch"
-    if [ "$_ch" = "stable" ]; then _label="正式版（stable）"
-    else _label="最新版（含 alpha/beta）"; fi
+    if [ "$_ch" = "apk" ]; then
+        INSTALL_CHANNEL_CHOICE=""
+        INSTALL_SOURCE_CHOICE="apk"
+        _label="Alpine 系统包版（apk）"
+    else
+        INSTALL_CHANNEL_CHOICE="$_ch"
+        INSTALL_SOURCE_CHOICE="github"
+        if [ "$_ch" = "stable" ]; then _label="正式版（stable）"
+        else _label="最新版（含 alpha/beta）"; fi
+    fi
     echo "  ${DIM}→ 已选内核：${RESET}${GREEN}${_label}${RESET}"
     return 0
 }
@@ -7424,7 +7509,8 @@ confirm_install(){
     echo
     choose_install_channel || return 1
     echo
-    if [ "$INSTALL_CHANNEL_CHOICE" = "stable" ]; then _cl="正式版（stable）"
+    if [ "${INSTALL_SOURCE_CHOICE:-}" = "apk" ]; then _cl="Alpine 系统包版（apk）"
+    elif [ "$INSTALL_CHANNEL_CHOICE" = "stable" ]; then _cl="正式版（stable）"
     else _cl="最新版（含 alpha/beta）"; fi
     local _ok=0 _n=0 _v
     while [ "$_n" -lt 3 ]; do
@@ -7470,6 +7556,9 @@ initial_install(){
         SINGBOX_CHANNEL="$INSTALL_CHANNEL_CHOICE"
         SINGBOX_WANT_VERSION=""
     fi
+    if [ -n "${INSTALL_SOURCE_CHOICE:-}" ]; then
+        INSTALL_SOURCE="$INSTALL_SOURCE_CHOICE"
+    fi
     if [ "$_fresh" = "1" ]; then
         _mt1="$(_sys_mem_total_mb)"
         case "$_mt1" in ''|*[!0-9]*) _mt1="" ;; esac
@@ -7482,8 +7571,23 @@ initial_install(){
     init_files
     progress 45 "识别服务器地理位置"
     detect_country
-    progress 55 "下载 sing-box（$(_channel_label)）"
-    download_singbox
+    if [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
+        progress 55 "安装 sing-box（Alpine 软件源）"
+        if ! install_singbox_from_apk; then
+            warn "系统包版安装失败，安装已停止（未写入系统服务）"
+            echo  "    也可重跑脚本，在确认屏选 1 或 2 改用 GitHub 官方二进制"
+            exit 1
+        fi
+    else
+        progress 55 "下载 sing-box（$(_channel_label)）"
+        if ! download_singbox; then
+            warn "内核下载失败，安装已停止（未写入系统服务）"
+            echo  "    代理 / 镜像 / 手动安装三种办法见上方提示；Alpine 也可重跑并选 3 用系统包版"
+            exit 1
+        fi
+        INSTALL_SOURCE="github"
+        save_settings
+    fi
     progress 72 "安装系统服务"
     install_service
     progress 84 "写入管理器"
@@ -7583,7 +7687,82 @@ fetch_singbox_release(){
       | "\(.tag)\t\(.url)"
     ' 2>/dev/null | head -n1
 }
+_apk_available(){
+    [ "${OS:-}" = "alpine" ] || return 1
+    command -v apk >/dev/null 2>&1 || return 1
+    return 0
+}
+_apk_pkg_version(){
+    _apk_available || return 1
+    local out="" v=""
+    out="$(run_with_timeout 12 apk search -x sing-box 2>/dev/null)" || out=""
+    v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
+    if [ -z "$v" ]; then
+        run_with_timeout 25 apk update >/dev/null 2>&1 || true
+        out="$(run_with_timeout 12 apk search -x sing-box 2>/dev/null)" || out=""
+        v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
+    fi
+    if [ -z "$v" ]; then
+        out="$(run_with_timeout 12 apk policy sing-box 2>/dev/null)" || out=""
+        v="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]\{1,\}\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\):[[:space:]]*$/\1/p' | head -n1)"
+    fi
+    [ -n "$v" ] || return 1
+    printf '%s\n' "$v"
+}
+_apk_pkg_version_cached(){
+    if [ "${APK_PKG_VER_CHECKED:-0}" != "1" ]; then
+        APK_PKG_VER_CHECKED=1
+        APK_PKG_VER="$(_apk_pkg_version 2>/dev/null)" || APK_PKG_VER=""
+    fi
+    printf '%s' "${APK_PKG_VER:-}"
+}
+_apk_init_backup(){
+    [ "${INIT:-none}" = openrc ] || return 0
+    [ -f /etc/init.d/sing-box ] || return 0
+    _apk_available || return 0
+    if apk info --who-owns /etc/init.d/sing-box >/dev/null 2>&1; then
+        [ -f "${BASE}/init-from-apk.bak" ] && return 0
+        cp -f /etc/init.d/sing-box "${BASE}/init-from-apk.bak" 2>/dev/null || true
+        warn "检测到 /etc/init.d/sing-box 属于 Alpine 软件包；本脚本会接管为指向 $CONF 的服务文件"
+        echo  "    原件已备份：${BASE}/init-from-apk.bak"
+        echo  "    apk 日后升级 sing-box-openrc 可能覆盖它，届时到「服务管理 → 6」或「14 自检/修复」重建"
+    fi
+    return 0
+}
+install_singbox_from_apk(){
+    _apk_available || { warn "本机不是 Alpine 或没有 apk，无法使用系统包版"; return 1; }
+    local _log="${LOGDIR:-/tmp}/apk-install.log" _sysbin="" _ver=""
+    info "正在从 Alpine 软件源安装 sing-box（不访问 GitHub）..."
+    : > "$_log" 2>/dev/null || _log="/tmp/singbox-nat-apk.log"
+    if ! run_with_timeout 180 apk add --no-cache sing-box >"$_log" 2>&1; then
+        warn "apk 安装 sing-box 失败（软件源里没有该包 / 网络不可达 / 索引过期）"
+        echo  "    可自查：apk update && apk search sing-box"
+        echo  "    安装日志：$_log"
+        return 1
+    fi
+    if [ -x /usr/bin/sing-box ]; then
+        _sysbin=/usr/bin/sing-box
+    else
+        _sysbin="$(apk info -L sing-box 2>/dev/null | sed -n 's|^/*\(usr/bin/sing-box\)[[:space:]]*$|/\1|p' | head -n1)"
+    fi
+    [ -n "$_sysbin" ] && [ -x "$_sysbin" ] || { warn "apk 已安装但找不到 sing-box 可执行文件"; return 1; }
+    "$_sysbin" version >/dev/null 2>&1 || { warn "系统包版 sing-box 在本机无法执行"; return 1; }
+    rm -f "$BIN" "${BIN}.new" 2>/dev/null || true
+    ln -s "$_sysbin" "$BIN" 2>/dev/null || { warn "创建 $BIN 软链失败"; return 1; }
+    _ver="$("$BIN" version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -n1)"
+    [ -n "$_ver" ] && printf '%s\n' "$_ver" > "$VERSION_FILE"
+    rm -f "$BASE/.sbver.cache" 2>/dev/null || true
+    SB_VERSION_CACHE=""
+    INSTALL_SOURCE="apk"; SINGBOX_WANT_VERSION=""
+    ok "已安装 Alpine 系统包版 sing-box ${_ver:-版本未知}（$_sysbin → $BIN）"
+    _apk_init_backup
+    return 0
+}
 _channel_label(){
+    if [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
+        printf 'Alpine 软件源（系统包版）\n'
+        return 0
+    fi
     case "${SINGBOX_CHANNEL:-any}" in
         stable) printf '最新正式版\n' ;;
         pre)    printf '最新测试版\n' ;;
