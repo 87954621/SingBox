@@ -68,6 +68,7 @@ COUNTRY_CODE=""; COUNTRY_NAME=""
 OS="unknown"; VER=""; ARCH=""; INIT="none"
 REALITY_PRIVATE=""; REALITY_PUBLIC=""
 BATCH_MODE=0; SB_RUN_MENU=0
+SB_ASSUME_DEFAULTS="${SB_ASSUME_DEFAULTS:-0}"
 BATCH_RESERVE=16
 CURRENT_SNAPSHOT=""; FINGERPRINT="chrome"; UOT_ENABLED="0"
 CLASH_RULE_MODE="full"
@@ -78,7 +79,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.16"
+VERSION="V3.9.17"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -7074,10 +7075,24 @@ uninstall(){
     exit 0
 }
 
+_ASK_VALUE=""
+_ask(){
+    local _prompt="$1"
+    _ASK_VALUE=""
+    if [ -t 0 ]; then
+        IFS= read -r -p "$_prompt" _ASK_VALUE || return 1
+    elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        printf '%s' "$_prompt" >/dev/tty 2>/dev/null || true
+        IFS= read -r _ASK_VALUE </dev/tty 2>/dev/null || return 1
+    else
+        return 1
+    fi
+    return 0
+}
 choose_install_channel(){
     local _pre="${INSTALL_CHANNEL_PRESET:-${SINGBOX_CHANNEL:-any}}" _a="" _try=0 _ch=""
+    local _def="" _prompt="" _label=""
     case "$_pre" in stable|pre) ;; *) _pre="any" ;; esac
-    echo
     echo "  ${BOLD}选择 sing-box 内核版本${RESET}"
     echo "    ${BOLD}1.${RESET} 最新版（含 alpha/beta）  ${GREEN}← 推荐，功能最全${RESET}"
     echo "       ${DIM}HTTP/2 显式声明、HTTP/3 都要 1.15.0+，只有这条路装得到${RESET}"
@@ -7085,28 +7100,41 @@ choose_install_channel(){
     echo "       ${DIM}官方正式线目前停在 1.14.x，装它就用不了 HTTP/3${RESET}"
     echo
     while [ "$_try" -lt 3 ]; do
-        if [ "$_pre" = "stable" ]; then
-            read -r -p "  请选择 [2]： " _a || _a=""
-            _a="${_a:-2}"
-        else
-            read -r -p "  请选择 [1]： " _a || _a=""
-            _a="${_a:-1}"
+        if [ "$_pre" = "stable" ]; then _def="2"; _prompt="  请选择 [2]： "
+        else _def="1"; _prompt="  请选择 [1]： "; fi
+        if ! _ask "$_prompt"; then
+            if [ "${SB_ASSUME_DEFAULTS:-0}" = "1" ]; then
+                _ch="${INSTALL_CHANNEL_PRESET:-$_pre}"
+                echo
+                warn "无人值守模式：读不到交互输入，内核频道采用 $_ch"
+                break
+            fi
+            echo
+            warn "没能读到你的选择（输入已结束 / 不是交互终端），安装已停止"
+            echo "  常见于用管道运行：curl ... | bash —— read 会把脚本内容当输入吞掉，"
+            echo "  或直接拿到 EOF，于是「没选」也被当成默认。请改用下面任一方式重跑："
+            echo "    bash <(curl -fsSL <脚本URL>)           # bash 进程替换"
+            echo "    wget -qO sb.sh <脚本URL> && bash sb.sh  # 先下载再运行"
+            echo "  无人值守请显式声明：SB_ASSUME_DEFAULTS=1 SINGBOX_CHANNEL=stable bash sb.sh"
+            return 1
         fi
+        _a="${_ASK_VALUE:-$_def}"
+        [ -n "$_ASK_VALUE" ] || echo "  ${DIM}（直接回车，使用默认 $_def）${RESET}"
         case "$_a" in
-            1|any|latest|"") _ch="any"; break ;;
-            2|stable)        _ch="stable"; break ;;
+            1|any|latest) _ch="any"; break ;;
+            2|stable)     _ch="stable"; break ;;
             *) warn "请输入 1 或 2"; _try=$((_try + 1)) ;;
         esac
     done
     [ -n "$_ch" ] || { _ch="$_pre"; warn "三次输入无效，沿用预置频道 $_ch"; }
     INSTALL_CHANNEL_CHOICE="$_ch"
-    if [ "$_ch" = "stable" ]; then
-        echo "  ${DIM}→ 已选择：${RESET}${GREEN}正式版（stable）${RESET}"
-    else
-        echo "  ${DIM}→ 已选择：${RESET}${GREEN}最新版（含 alpha/beta）${RESET}"
-    fi
+    if [ "$_ch" = "stable" ]; then _label="正式版（stable）"
+    else _label="最新版（含 alpha/beta）"; fi
+    echo "  ${DIM}→ 已选内核：${RESET}${GREEN}${_label}${RESET}"
+    return 0
 }
 confirm_install(){
+    local _cl=""
     echo
     panel "安装确认"
     echo "  即将在本机安装 Sing-box NAT ${BOLD}${VERSION}${RESET}："
@@ -7119,10 +7147,21 @@ confirm_install(){
     echo "  ${DIM}安装过程会自动补装所需依赖（curl / jq / openssl 等）。${RESET}"
     echo "  ${DIM}订阅服务默认不开 —— 装好后需要时再到菜单里自行选择并启动。${RESET}"
     echo
-    choose_install_channel
+    choose_install_channel || return 1
     echo
-    read -r -p "  确认安装？[Y/n] " a || a=""
-    case "${a:-Y}" in
+    if [ "$INSTALL_CHANNEL_CHOICE" = "stable" ]; then _cl="正式版（stable）"
+    else _cl="最新版（含 alpha/beta）"; fi
+    if ! _ask "  确认安装（内核：${_cl}）？[Y/n] "; then
+        if [ "${SB_ASSUME_DEFAULTS:-0}" = "1" ]; then
+            echo
+            warn "无人值守模式：读不到交互输入，按默认确认继续安装"
+            return 0
+        fi
+        echo
+        warn "没能读到安装确认，安装已停止（未做任何改动）"
+        return 1
+    fi
+    case "${_ASK_VALUE:-Y}" in
         y|Y|yes|YES|"") return 0 ;;
         *) return 1 ;;
     esac
