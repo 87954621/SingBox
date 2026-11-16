@@ -2,17 +2,19 @@
 
 一个 Bash 单文件脚本，在 Linux 上一键部署和管理 **16 种 sing-box 协议**，自带中文菜单、节点管理、订阅链接和 Argo 隧道。支持 Debian / Ubuntu / CentOS / Alpine / Arch，systemd / OpenRC / 无 init 都能跑，**NAT 小鸡没有公网端口也能用**。
 
-**V3.9.23**
+**V3.9.26**
 
 ---
 
 ## 安装
 
-```bash
-# 推荐：先下载，再运行
-wget -qO sb.sh https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh && bash sb.sh
 
+# 推荐：先下载，再运行
+```bash
+wget -qO sb.sh https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh && bash sb.sh
+```
 # 或者用 curl
+```bash
 curl -fsSL https://raw.githubusercontent.com/87954621/SingBox/refs/heads/main/sing-box.sh -o sing-box.sh && bash sing-box.sh
 ```
 
@@ -99,52 +101,3 @@ GOMEMLIMIT 是**软目标**，只让 GC 更积极，不会把主服务 OOM kill�
 
 ---
 
-<details>
-<summary>维护者说明与更新日志（普通用户可跳过）</summary>
-
-### 交付约定
-
-- 本地交付恰好三份：`sing-box-nat-v3.9.23.sh`、`sing-box-nat-v3.9.23-nocomment.sh`、`README.md`（固定名）。每次 `VERSION` +0.1 时前两份同步重命名，README 头部徽标与更新日志同步。
-- **仓库入口永远叫 `sing-box.sh`**：`UPDATE_URL` 与已部署机器的 `sb update` 都依赖这个固定地址，改名会让旧机器集体失效。发布时把带版本号的文件复制/上传成 `sing-box.sh`，原件留作归档。
-- 校验四件套：两份脚本 `bash -n`、非注释代码行逐字一致、heredoc 体逐字一致、纯 LF；版本号在源码 `VERSION`、第 9 行文件头、无注释版、README 徽标四处一致。
-
-### 更新日志
-
-### V3.9.23（当前版本）
-- **Edge 源 apk 安装改为完全裸跑**：真机 `Killed`（SIGKILL）证明连 `timeout` 包装进程本身都被系统杀掉——91 MiB 小内存上，任何包装（后台 `run_with_timeout` / 前台 `timeout`）都会把 apk 挤过内存红线。现在 apk 完全裸跑（与 yyds 和你手动成功的命令一致），失败时若日志出现「安装到一半无 OK」会明确提示是内存不足，并建议改选 1 走内存峰值更低的单文件二进制。
-- 说明：`GOMEMLIMIT`（低内存模式）只约束 sing-box **运行时**的 Go 堆，管不到 apk 这个 C 程序，所以帮不上安装这一步。
-
-### V3.9.22
-- **修掉 Edge 源「探测得到、装到一半失败」**：V3.9.21 用自研 `run_with_timeout` 把 `apk add` 丢到后台执行、还吞掉 stderr，真机上两次都卡在 `(1/2) Installing sing-box` 被误判失败且看不到原因。现在改为**前台执行**（与 yyds 一致），仅用系统自带 `timeout` 命令兜硬超时，保留完整错误日志。
-
-### V3.9.21
-- **内核选项精简为三选一**：取消独立的选项 4 和「确认临时使用 Edge 源」二次提问。选项 3 恒为「Alpine 系统包版」——稳定源有包用稳定源、没包就静默探测并临时用 Edge 源（`--repository` 只对单条命令生效，**不改 `/etc/apk/repositories`**），风险写进选项说明，最后一道 `y` 即为授权。老用户敲 `4` 仍等价选项 3。
-- **修掉 Edge 源「探测得到、装不上」**：照搬 `install-singbox-yyds.sh` 真机成功过的命令形态——先 `apk update`，再 `apk add --repository=http://.../edge/community sing-box`，**去掉 `--no-cache`**（它会忽略 `-X/--repository` 追加源的索引，正是上一版查得到包却装失败的根因）；主源失败静默换 https 备用源，失败时把日志末尾直接贴出来。
-
-### V3.9.20
-- **依赖分层**：开局只补确实缺的必需依赖（`curl / jq / openssl / tar / gzip / ca-certificates`），且带硬超时；`qrencode / bind-tools / procps / iproute2` 不再自动安装。二维码功能入口先显式问 `y / N`，拒绝也能复制文本链接；二维码菜单新增第 3 项可随时补装。`port_used` 增加 `/proc/net/tcp*` 回退，没有 `ss` 也能正确判端口占用。
-- **软件源查不到 sing-box 时不再给一个假选项**：选项 3 标注「本次不可用」并拦截输入；新增选项 4「临时 Alpine Edge 源」，需二次确认 + 现场探测，命令用 `--repository=` 只对单次生效，**不改 `/etc/apk/repositories`**。开关 `APK_USE_EDGE` 写入 settings.env，重装 / 升级沿用。
-- 确认屏改为列出本次真正要装的必需包名；所有包管理器动作统一套 `run_with_timeout`，避免 apt/apk 卡 DNS 时把安装挂死。
-- 参考 `caigouzi121380/singbox-deploy` 的 Alpine 安装思路（临时指定 edge/community 源），但保留本项目的架构/libc 判断、版本选择和「系统级动作先问」原则。
-
-### V3.9.19
-- 安装时可选 **Alpine 系统包版**：识别系统后查 apk 源版本并显示在确认屏，走 Alpine CDN、不碰 GitHub，`$BIN` 用软链跟随系统包升级。
-- 修掉「下载失败仍继续写服务并打印安装完成」；两条安装路径都检查返回值。
-- 接管 apk 自带的 `/etc/init.d/sing-box` 前先备份，卸载时按需还原；卸载确认屏说明系统包不会自动卸掉。
-- 升级菜单新增第 5 项反向切到系统包版；「只重装内核」按当前来源重装；预查频道不再污染默认频道。
-- 重写 README 为面向用户的精简版，技术细节与历史日志收进本折叠区。
-
-### V3.9.18
-- 确认屏不再把**空行**当成用户选了默认：必须显式输入 `1`/`2` 和 `y`，三次无效即中止。
-- 新增低内存模式（`GOMEMLIMIT` / warn 日志 / fd 上限）与「服务管理 → 6 内存体检」。
-- 交付文件名改为带完整小版本号。
-
-### V3.9.17
-- 确认屏不再把 **EOF** 当成默认选择；读不到输入就停止安装并给出正确运行方式，无人值守需 `SB_ASSUME_DEFAULTS=1`。
-
-### V3.9.16
-- 安装确认屏新增「最新版 / 正式版」二选一；修掉 stable 断网兜底会装到 alpha 的缺陷。
-
-更早版本（V3.9.15 及以前）见仓库提交历史。
-
-</details>
