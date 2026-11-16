@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.25"
+VERSION="V3.9.26"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -2832,10 +2832,8 @@ proxy-groups:
     type: select
     proxies:
       - "♻️ 自动选择"
-      - "🤖 AI 服务"
-      - "🌍 国外媒体"
-      - "🎯 全球直连"
 YAML
+    if [ "$nl" != "      - DIRECT" ]; then printf '      - DIRECT\n'; fi
     printf '%s\n' "$nl"
     cat <<'YAML'
   - name: "♻️ 自动选择"
