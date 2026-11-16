@@ -80,12 +80,12 @@ INSTALL_CHANNEL_CHOICE=""; INSTALL_CHANNEL_PRESET=""; INSTALL_SOURCE_CHOICE=""
 APK_PKG_VER=""; APK_PKG_VER_CHECKED=0
 APK_USE_EDGE="${APK_USE_EDGE:-0}"; APK_EDGE_CHOICE=""
 APK_EDGE_REPO="http://dl-cdn.alpinelinux.org/alpine/edge/community"
-APK_EDGE_REPO_ALT="http://dl-cdn.alpinelinux.org/alpine/edge/community"
+APK_EDGE_REPO_ALT="https://dl-cdn.alpinelinux.org/alpine/edge/community"
 DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.24"
+VERSION="V3.9.25"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -453,17 +453,6 @@ install_deps(){
     if [ -z "$_pkgs" ]; then
         ok "必需依赖齐全，本次不安装任何系统包"
         return 0
-    fi
-    if [ "$OS" = "alpine" ]; then
-        local _apk_lim=""
-        _apk_lim="$(_apk_memory_limit_mb 2>/dev/null)"
-        case "$_apk_lim" in
-            ''|*[!0-9]*) ;;
-            *)
-                if [ "$_apk_lim" -lt 96 ]; then
-                    die "容器内存上限仅 ${_apk_lim} MiB，且必需依赖缺失（$_pkgs）。为避免 apk 再次触发 OOM，已停止自动补装；请先提高容器内存或由宿主机开放 Swap。"
-                fi ;;
-        esac
     fi
     info "本次只需补装必需依赖：$_pkgs"
     echo "  ${DIM}二维码 / dig / ss 等可选依赖不在开局安装：用到时会先问你 y/N。${RESET}"
@@ -7527,6 +7516,7 @@ choose_install_channel(){
             echo "    ${BOLD}3.${RESET} Alpine 系统包版（稳定源无包，临时用 Edge 源）"
             echo "       ${DIM}临时源不改系统配置；edge 属滚动分支、版本较旧，用不了 HTTP/3${RESET}"
         fi
+        echo "       ${DIM}装不上（如小内存 OOM）会自动降级到 GitHub 二进制继续装${RESET}"
         [ -x /usr/bin/sing-box ] && \
             echo "  ${DIM}检测到系统已装 apk 包版 sing-box，选 3 会直接接管它。${RESET}"
     fi
@@ -7562,10 +7552,12 @@ choose_install_channel(){
                 elif [ "$_apk_ok" = "1" ]; then
                     _ch="apk"; APK_EDGE_CHOICE=0; break
                 else
-                    # 低内存容器中禁止在选择菜单阶段反复 apk search/update。
-                    # 直接将安装交给一次 apk add，由它验证仓库中是否存在包。
-                    _edge_ver="安装时由 APK 仓库确认"
-                    _ch="apk"; APK_EDGE_CHOICE=1; break
+                    _edge_ver="$(_apk_edge_pkg_version 2>/dev/null)" || _edge_ver=""
+                    if [ -n "$_edge_ver" ]; then
+                        _ch="apk"; APK_EDGE_CHOICE=1; break
+                    fi
+                    warn "稳定源和 Edge 源都查不到 sing-box，选项 3 本次不可用；请选 1 或 2"
+                    _try=$((_try + 1))
                 fi ;;
             '')
                 warn "只收到空输入（可能只是按了回车），请明确输入 $_range"
@@ -7587,7 +7579,7 @@ choose_install_channel(){
     if [ "$_ch" = "apk" ]; then
         INSTALL_CHANNEL_CHOICE=""
         INSTALL_SOURCE_CHOICE="apk"
-        if [ "${APK_EDGE_CHOICE:-0}" = "1" ]; then _label="Alpine 系统包版（Edge 源，安装时检查）"
+        if [ "${APK_EDGE_CHOICE:-0}" = "1" ]; then _label="Alpine 系统包版（Edge 源 ${_edge_ver}）"
         else _label="Alpine 系统包版（apk ${_apk_ver}）"; fi
     else
         INSTALL_CHANNEL_CHOICE="$_ch"
@@ -7699,10 +7691,31 @@ initial_install(){
     if [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
         if [ "${APK_USE_EDGE:-0}" = "1" ]; then progress 55 "安装 sing-box（Alpine Edge 源）"
         else progress 55 "安装 sing-box（Alpine 软件源）"; fi
-        if ! install_singbox_from_apk; then
-            warn "系统包版安装失败，安装已停止（未写入系统服务）"
-            echo  "    也可重跑脚本，在确认屏选 1 或 2 改用 GitHub 官方二进制"
-            exit 1
+        if install_singbox_from_apk; then
+            :
+        else
+            warn "系统包版安装失败（小内存机器多为内存不足被系统杀掉）"
+            echo  "    自动降级：改用 GitHub 官方单文件二进制继续安装（内存占用更低）..."
+            SINGBOX_CHANNEL="${SINGBOX_CHANNEL:-any}"
+            SINGBOX_WANT_VERSION=""
+            APK_USE_EDGE=0
+            INSTALL_SOURCE="github"
+            local _mem_mb=""
+            _mem_mb="$(_sys_mem_total_mb)"
+            case "$_mem_mb" in ''|*[!0-9]*) _mem_mb="" ;; esac
+            if [ -n "$_mem_mb" ] && [ "$_mem_mb" -le 128 ] 2>/dev/null; then
+                export _SB_LOWMEM_DOWNLOAD=1
+                echo  "    检测到 ${_mem_mb} MiB 极小内存，下载将用磁盘临时目录 + 流式解压降低内存峰值"
+            fi
+            progress 55 "下载 sing-box（自动降级为 GitHub 二进制）"
+            if ! download_singbox; then
+                warn "降级下载也失败，安装已停止（未写入系统服务）"
+                echo  "    可挂代理或镜像：SINGBOX_DOWNLOAD_MIRROR=https://ghproxy.net/ bash sb.sh"
+                unset _SB_LOWMEM_DOWNLOAD
+                exit 1
+            fi
+            unset _SB_LOWMEM_DOWNLOAD
+            save_settings
         fi
     else
         progress 55 "下载 sing-box（$(_channel_label)）"
@@ -7821,10 +7834,17 @@ _apk_available(){
 _apk_pkg_version(){
     _apk_available || return 1
     local out="" v=""
-    # 只读取本地已有索引；绝不在菜单探测阶段执行 apk update。
-    # 缺少索引/包时，后续一次性 apk add 会直接处理，不在这里重复下载索引。
-    out="$(apk search -x sing-box 2>/dev/null)" || out=""
+    out="$(run_with_timeout 12 apk search -x sing-box 2>/dev/null)" || out=""
     v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
+    if [ -z "$v" ]; then
+        run_with_timeout 25 apk update >/dev/null 2>&1 || true
+        out="$(run_with_timeout 12 apk search -x sing-box 2>/dev/null)" || out=""
+        v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
+    fi
+    if [ -z "$v" ]; then
+        out="$(run_with_timeout 12 apk policy sing-box 2>/dev/null)" || out=""
+        v="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]\{1,\}\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\):[[:space:]]*$/\1/p' | head -n1)"
+    fi
     [ -n "$v" ] || return 1
     printf '%s\n' "$v"
 }
@@ -7834,6 +7854,22 @@ _apk_pkg_version_cached(){
         APK_PKG_VER="$(_apk_pkg_version 2>/dev/null)" || APK_PKG_VER=""
     fi
     printf '%s' "${APK_PKG_VER:-}"
+}
+_apk_edge_pkg_version(){
+    _apk_available || return 1
+    local repo out="" v=""
+    for repo in "$APK_EDGE_REPO" "${APK_EDGE_REPO_ALT:-}"; do
+        [ -n "$repo" ] || continue
+        out="$(run_with_timeout 45 apk search -x -X "$repo" sing-box 2>/dev/null)" || out=""
+        v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
+        if [ -z "$v" ]; then
+            run_with_timeout 45 apk update -X "$repo" >/dev/null 2>&1 || true
+            out="$(run_with_timeout 20 apk search -x -X "$repo" sing-box 2>/dev/null)" || out=""
+            v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
+        fi
+        [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+    done
+    return 1
 }
 _apk_init_backup(){
     [ "${INIT:-none}" = openrc ] || return 0
@@ -7848,84 +7884,39 @@ _apk_init_backup(){
     fi
     return 0
 }
-# 返回当前容器内存上限（MiB）；优先读取 cgroup 限额，兼容 v1/v2。
-_apk_memory_limit_mb(){
-    local v="" n=""
-    if [ -r /sys/fs/cgroup/memory.max ]; then
-        v="$(cat /sys/fs/cgroup/memory.max 2>/dev/null)"
-        case "$v" in
-            ''|max) ;;
-            *[!0-9]*) ;;
-            *) n=$((v / 1048576)) ;;
-        esac
-    fi
-    if [ -z "$n" ] && [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
-        v="$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null)"
-        case "$v" in
-            ''|*[!0-9]*) ;;
-            *) [ "$v" -lt 9000000000000000000 ] 2>/dev/null && n=$((v / 1048576)) ;;
-        esac
-    fi
-    if [ -z "$n" ] && [ -r /proc/meminfo ]; then
-        v="$(awk '/^MemAvailable:/ {print int($2/1024); exit}' /proc/meminfo)"
-        case "$v" in ''|*[!0-9]*) ;; *) n="$v" ;; esac
-    fi
-    printf '%s' "${n:-}"
-}
 install_singbox_from_apk(){
     _apk_available || { warn "本机不是 Alpine 或没有 apk，无法使用系统包版"; return 1; }
     local _log="${LOGDIR:-/tmp}/apk-install.log" _sysbin="" _ver=""
-    local _rc=1 _repo="" _mem="" _swap_max=""
+    local _rc=1 _repo="" _n=0
     info "正在从 Alpine 软件源安装 sing-box（不访问 GitHub）..."
     : > "$_log" 2>/dev/null || _log="/tmp/singbox-nat-apk.log"
-    _mem="$(_apk_memory_limit_mb)"
-    if [ -r /sys/fs/cgroup/memory.swap.max ]; then
-        _swap_max="$(cat /sys/fs/cgroup/memory.swap.max 2>/dev/null)"
-    fi
-    if [ -n "$_mem" ]; then
-        info "检测到容器内存上限约 ${_mem} MiB"
-        if [ "$_mem" -lt 160 ]; then
-            warn "当前内存低于 160 MiB，APK 解包仍有 OOM 风险；本次仅尝试一次安装，不做重复重试。"
-        fi
-    fi
-
     if [ "${APK_USE_EDGE:-0}" = "1" ]; then
-        # 优先复用 /var/cache/apk 中已有的索引和包缓存。
-        # 不使用 --no-cache：该选项会禁用缓存，可能导致每次安装重新拉取索引。
-        # 沿用对照脚本的 HTTP Edge community 地址，避免不必要的 TLS 开销。
-        _repo="${APK_EDGE_REPO_ALT:-http://dl-cdn.alpinelinux.org/alpine/edge/community}"
-        apk add --no-progress --repository="$_repo" sing-box >>"$_log" 2>&1
-        _rc=$?
-        # 只有非 OOM 的网络/仓库错误才尝试备用协议；OOM 后重试同一包只会再次被杀。
-        if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 137 ] && [ -n "${APK_EDGE_REPO:-}" ] && [ "$APK_EDGE_REPO" != "$_repo" ]; then
-            printf '\n---- 非 OOM 错误，改用备用地址 %s ----\n' "$APK_EDGE_REPO" >>"$_log"
-            apk add --no-progress --repository="$APK_EDGE_REPO" sing-box >>"$_log" 2>&1
-            _rc=$?
-        fi
+        apk update >>"$_log" 2>&1 || true
+        for _repo in "$APK_EDGE_REPO" "${APK_EDGE_REPO_ALT:-}"; do
+            [ -n "$_repo" ] || continue
+            _n=$((_n + 1))
+            [ "$_n" -gt 1 ] && printf '\n---- 主源失败，改用备用地址 %s ----\n' "$_repo" >>"$_log"
+            if apk add --repository="$_repo" sing-box >>"$_log" 2>&1; then _rc=0; break; fi
+        done
     else
-        apk add --no-progress sing-box >"$_log" 2>&1
-        _rc=$?
+        if apk add --no-cache sing-box >"$_log" 2>&1; then _rc=0; fi
     fi
-
-    if [ "$_rc" -ne 0 ]; then
+    if [ "$_rc" != "0" ]; then
         if [ "${APK_USE_EDGE:-0}" = "1" ]; then
-            warn "从 Alpine Edge 源安装 sing-box 失败（退出码：$_rc）"
+            warn "从 Alpine Edge 源安装 sing-box 失败"
         else
-            warn "apk 安装 sing-box 失败（退出码：$_rc；可能是软件源、网络或内存问题）"
+            warn "apk 安装 sing-box 失败（软件源里没有该包 / 网络不可达 / 索引过期）"
+            echo  "    稳定分支通常不含此包；重跑选 3 会自动用 Edge 源，或选 1/2 走 GitHub"
         fi
-        echo "    安装日志：$_log"
-        echo "    ---- 日志末尾 ----"
-        tail -n 16 "$_log" 2>/dev/null | sed 's/^/    /' || true
-        if [ "$_rc" -eq 137 ] || grep -Eqi 'out of memory|oom-kill|oom killer|killed process|memory cgroup out of memory' "$_log" 2>/dev/null; then
+        echo  "    安装日志：$_log"
+        echo  "    ---- 日志末尾 ----"
+        tail -n 12 "$_log" 2>/dev/null | sed 's/^/    /' || true
+        if grep -q 'Installing sing-box' "$_log" 2>/dev/null && ! grep -q '^OK:' "$_log" 2>/dev/null; then
             echo
-            warn "已识别到进程被 SIGKILL/OOM 的迹象；已停止重试，避免再次耗尽 NAT 容器内存。"
-            echo "    低内存模式的 GOMEMLIMIT 只限制 sing-box 运行时，不限制 apk 安装过程。"
-            if [ "$_swap_max" = "0" ]; then
-                echo "    当前 cgroup 的 memory.swap.max=0，容器被禁止使用 Swap；容器内创建 Swap 文件无法绕过此限制。"
-                echo "    可行方向：请服务商/宿主机将容器内存上限提高到至少 256 MiB，或允许配置 Swap 后再安装。"
-            else
-                echo "    可行方向：提高容器内存上限（建议至少 256 MiB），或在宿主机/服务商允许时配置 Swap 后再安装。"
-            fi
+            warn "看日志像是 apk 装到一半被系统杀掉（小内存机器内存不足 / OOM）"
+            echo  "    GOMEMLIMIT（低内存模式）只约束 sing-box 运行时，管不到 apk 安装这一步。"
+            echo  "    脚本会自动降级到 GitHub 单文件二进制继续安装（内存占用更低）。"
+            apk del sing-box >>"$_log" 2>&1 || true
         fi
         return 1
     fi
@@ -8059,13 +8050,36 @@ download_singbox(){
     for _u in "${_cands[@]}"; do
         [ -n "$_u" ] || continue
         _tried=$((_tried + 1))
-        tmp="$(mktemp -d)" || { warn "无法创建临时目录"; return 1; }
+        if [ "${_SB_LOWMEM_DOWNLOAD:-0}" = "1" ] && [ -n "${BASE:-}" ] && [ -d "$BASE" ]; then
+            tmp="${BASE}/.sb-dltmp.$$"
+            mkdir -p "$tmp" 2>/dev/null || tmp="$(mktemp -d)" || { warn "无法创建临时目录"; return 1; }
+        else
+            tmp="$(mktemp -d)" || { warn "无法创建临时目录"; return 1; }
+        fi
         _fetch="$_u"
         [ -n "${SINGBOX_DOWNLOAD_MIRROR:-}" ] && _fetch="${SINGBOX_DOWNLOAD_MIRROR%/}/${_u}"
         info "正在下载 $(basename "$_u")（本机 ${_lc}，最长 150 秒）..."
         : > "$_dl_log" 2>/dev/null || true
         _dlrc=0
-        run_with_timeout 150 _sb_fetch_asset "$tmp/sing-box.tar.gz" "$_fetch" "$_dl_log" || _dlrc=$?
+        if [ "${_SB_LOWMEM_DOWNLOAD:-0}" = "1" ]; then
+            if curl -fLsS --connect-timeout 10 --max-time 120 --retry 1 --retry-delay 2 \
+                "$_fetch" 2>"$_dl_log" | tar -xzf - -C "$tmp" 2>/dev/null; then
+                :
+            else
+                _dlrc=1
+                run_with_timeout 150 _sb_fetch_asset "$tmp/sing-box.tar.gz" "$_fetch" "$_dl_log" || _dlrc=$?
+                if [ "$_dlrc" = 0 ]; then
+                    tar -xzf "$tmp/sing-box.tar.gz" -C "$tmp" 2>/dev/null || _dlrc=99
+                    rm -f "$tmp/sing-box.tar.gz" 2>/dev/null || true
+                fi
+            fi
+        else
+            run_with_timeout 150 _sb_fetch_asset "$tmp/sing-box.tar.gz" "$_fetch" "$_dl_log" || _dlrc=$?
+            if [ "$_dlrc" = 0 ]; then
+                tar -xzf "$tmp/sing-box.tar.gz" -C "$tmp" 2>/dev/null || _dlrc=99
+                rm -f "$tmp/sing-box.tar.gz" 2>/dev/null || true
+            fi
+        fi
         if [ "$_dlrc" != 0 ]; then
             rm -rf "$tmp"
             case "$_dlrc" in 5|6|7|28|35|52|56|124) _netbad=1 ;; esac
@@ -8073,9 +8087,6 @@ download_singbox(){
             [ -s "$_dl_log" ] && warn "下载报错：$(tail -n 1 "$_dl_log" | tr '\n' ' ')"
             [ "$_netbad" = 1 ] && break
             continue
-        fi
-        if ! tar -xzf "$tmp/sing-box.tar.gz" -C "$tmp" 2>/dev/null; then
-            rm -rf "$tmp"; _last="解压失败（文件可能不完整）"; continue
         fi
         found="$(find "$tmp" -type f -name sing-box | head -n1)"
         if [ -z "$found" ]; then
