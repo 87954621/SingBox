@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.29"
+VERSION="V3.9.31"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -1842,12 +1842,28 @@ add_hy2_realm(){
     append_inbound "$obj"; add_node "Hysteria2 + Realm" hy2-realm udp "$p" "" "$pw" "$s" "${rid}@${url}" "" ""
 }
 
+SB_CHECK_TIMEOUT=20
+_sb_check(){
+    local rc
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 3 "$SB_CHECK_TIMEOUT" "$BIN" check -c "$CONF"
+        rc=$?
+    else
+        "$BIN" check -c "$CONF"
+        rc=$?
+    fi
+    if [ "$rc" = 124 ]; then
+        warn "sing-box check 超过 ${SB_CHECK_TIMEOUT} 秒未返回（配置 I/O 卡住，如 STUN/DNS/证书读取）；已按检查失败处理，未重启服务"
+    fi
+    return "$rc"
+}
+
 validate(){
     jq empty "$CONF" >/dev/null 2>&1 || { warn "config.json JSON 格式错误"; return 1; }
     local dup
     dup="$(jq -r '[.inbounds[]?.tag // empty] | group_by(.)[] | select(length>1) | .[0]' "$CONF" 2>/dev/null | head -n1)"
     [ -z "$dup" ] || { warn "发现重复 inbound tag：$dup"; return 1; }
-    "$BIN" check -c "$CONF"
+    _sb_check
 }
 apply(){
     validate || { warn "配置检查失败，保留当前文件但不会重启"; return 1; }
@@ -1876,7 +1892,7 @@ apply(){
     done
     warn "sing-box 重启后未存活（已等待 20 秒）"
     local _diag _check _journal _summary
-    _check="$("$BIN" check -c "$CONF" 2>&1 | head -n 8)"
+    _check="$(_sb_check 2>&1 | head -n 8)"
     if [ "$INIT" = systemd ] && command -v journalctl >/dev/null 2>&1; then
         _journal="$(journalctl -u sing-box -n 80 --no-pager 2>/dev/null \
                     | grep -v 'systemd\[' \
@@ -1905,8 +1921,8 @@ ${_summary:-（无法读取）}
 _collect_sb_error(){
     local line=""
     if [ -x "$BIN" ] && [ -f "$CONF" ]; then
-        line="$("$BIN" check -c "$CONF" 2>&1 | grep -Ei 'FATAL|ERROR|panic|unknown field|decode config|cannot|invalid|duplicate|failed' | head -n 1)"
-        [ -z "$line" ] && line="$("$BIN" check -c "$CONF" 2>&1 | head -n 1)"
+        line="$(_sb_check 2>&1 | grep -Ei 'FATAL|ERROR|panic|unknown field|decode config|cannot|invalid|duplicate|failed' | head -n 1)"
+        [ -z "$line" ] && line="$(_sb_check 2>&1 | head -n 1)"
     fi
     if [ -z "$line" ] && [ "$INIT" = systemd ] && command -v journalctl >/dev/null 2>&1; then
         line="$(journalctl -u sing-box -n 100 --no-pager 2>/dev/null \
@@ -6187,7 +6203,7 @@ batch_menu(){
         *) warn "跳过未知编号：$c" ;;
       esac
       if [ "$_ok" = "1" ]; then
-          if jq empty "$CONF" >/dev/null 2>&1 && "$BIN" check -c "$CONF" >/dev/null 2>&1; then
+          if jq empty "$CONF" >/dev/null 2>&1 && _sb_check >/dev/null 2>&1; then
               okc=$((okc+1))
           else
               warn "$(protocol_name "$c") 写入后校验未通过，仅回退该协议"
@@ -6195,7 +6211,7 @@ batch_menu(){
               if ! jq empty "$CONF" >/dev/null 2>&1; then
                   _cerr="config.json JSON 结构损坏（jq 解析失败）"
               else
-                  _cerr="$("$BIN" check -c "$CONF" 2>&1 | grep -v '^$' | head -n 3 | tr '\n' ' ')"
+                  _cerr="$(_sb_check 2>&1 | grep -v '^$' | head -n 3 | tr '\n' ' ')"
               fi
               [ -n "$_cerr" ] && warn "  报错：$_cerr"
               local _cver=""
@@ -6618,7 +6634,7 @@ change_node_port(){
     if ! validate >/dev/null 2>&1; then
         warn "改端口后配置检查未通过，正在回滚"
         local _err
-        _err="$("$BIN" check -c "$CONF" 2>&1 | head -n 3 | tr '\n' ' ')"
+        _err="$(_sb_check 2>&1 | head -n 3 | tr '\n' ' ')"
         [ -n "$_err" ] && warn "  $_err"
         jq --argjson new "$np" --argjson old "$oldport" --arg proto "$proto" '
           def is_udp_inbound:
@@ -7240,6 +7256,8 @@ menu(){
     echo
     printf '  %s%2d.%s %s\n' "$BOLD" "0" "$RESET" "退出"
     echo
+    echo "  ${DIM}快捷：${RESET}${BOLD}r${RESET}${DIM}=重启服务  ${RESET}${BOLD}e${RESET}${DIM}=导出全部客户端配置  ${RESET}${BOLD}s${RESET}${DIM}=服务状态  ${RESET}${BOLD}v${RESET}${DIM}=内核版本${RESET}"
+    echo
     read -r -p "请选择： " c || c=""
     case "$c" in
       1) node_menu ;;
@@ -7292,7 +7310,11 @@ menu(){
       15) uninstall ;;
       16) check_update ;;
       0) exit 0 ;;
-      *) warn "无效选项"; sleep 1 ;;
+      r|R) apply; pause ;;
+      e|E) clear; export_all; ok "已导出 Clash / v2rayN / 小火箭配置到 ${SUBDIR}"; pause ;;
+      s|S) clear; status; pause ;;
+      v|V) clear; sb_version_detail; pause ;;
+      *) warn "无效选项：请输入 0-16 的编号，或快捷键 r/e/s/v"; sleep 1 ;;
     esac
   done
 }
@@ -7509,23 +7531,17 @@ choose_install_channel(){
         [ -n "$_apk_ver" ] && _apk_ok=1
     fi
     echo "  ${BOLD}选择 sing-box 内核${RESET}"
-    echo "    ${BOLD}1.${RESET} 最新版（含 alpha/beta，GitHub）  ${GREEN}← 推荐，功能最全${RESET}"
-    echo "       ${DIM}HTTP/2 显式声明、HTTP/3 都要 1.15.0+，只有这条路装得到${RESET}"
-    echo "    ${BOLD}2.${RESET} 正式版（stable，GitHub）       ${DIM}最稳，取官方 /latest${RESET}"
-    echo "       ${DIM}官方正式线目前停在 1.14.x，装它就用不了 HTTP/3${RESET}"
+    echo "    ${BOLD}1.${RESET} 最新版（含 alpha/beta）${GREEN} ← 推荐，16 协议全开、支持 HTTP/3${RESET}"
+    echo "    ${BOLD}2.${RESET} 正式版（stable）${DIM} — 最稳，但用不了 HTTP/3${RESET}"
     if _apk_available; then
         if [ "$_apk_ok" = "1" ]; then
-            echo "    ${BOLD}3.${RESET} Alpine 系统包版（apk 源：${GREEN}${_apk_ver}${RESET}）"
-            echo "       ${DIM}走 Alpine CDN、不碰 GitHub；版本较旧，用不了 HTTP/3${RESET}"
+            echo "    ${BOLD}3.${RESET} Alpine 系统包版（${GREEN}${_apk_ver}${RESET}）${DIM} — 不碰 GitHub，版本旧、无 HTTP/3${RESET}"
         else
-            echo "    ${BOLD}3.${RESET} Alpine 系统包版（稳定源无包，临时用 Edge 源）"
-            echo "       ${DIM}临时源不改系统配置；edge 属滚动分支、版本较旧，用不了 HTTP/3${RESET}"
+            echo "    ${BOLD}3.${RESET} Alpine 系统包版（临时 Edge 源）${DIM} — 不改系统源，版本旧、无 HTTP/3${RESET}"
         fi
-        echo "       ${DIM}装不上（如小内存 OOM）会自动降级到 GitHub 二进制继续装${RESET}"
-        [ -x /usr/bin/sing-box ] && \
-            echo "  ${DIM}检测到系统已装 apk 包版 sing-box，选 3 会直接接管它。${RESET}"
+        echo "       ${DIM}装不上会自动降级到 GitHub 二进制继续装${RESET}"
     fi
-    echo "  ${DIM}必须输入 $_range 后回车；只按回车 / 空输入不算选择。${RESET}"
+    echo "  ${DIM}请输入 $_range 后回车（空回车不算）；无人值守见脚注。${RESET}"
     echo
     while [ "$_try" -lt 3 ]; do
         if [ "$_pre" = "stable" ]; then _def="2"; else _def="1"; fi
@@ -7611,18 +7627,17 @@ confirm_install(){
     if [ -n "$_mt0" ]; then
         echo "    ${DIM}物理内存${RESET}  ${_mt0} MiB"
         if [ "$_mt0" -le 512 ] 2>/dev/null; then
-            echo "  ${DIM}小内存机器：首次安装会自动开启低内存模式（Go 堆软上限 + warn 日志），装好后可在「服务管理 → 6」关闭。${RESET}"
+            echo "  ${DIM}小内存机器将自动开启低内存模式（可在「服务管理 → 6」关闭）${RESET}"
         fi
     fi
     echo
     _need="$(core_deps_missing 2>/dev/null)"
     if [ -n "$_need" ]; then
-        echo "  ${DIM}本次需补装的必需依赖：${_need}${RESET}"
+        echo "  ${DIM}本次补装依赖：${_need}${RESET}"
     else
-        echo "  ${DIM}必需依赖已齐全，本次不安装系统包。${RESET}"
+        echo "  ${DIM}依赖已齐全，不安装系统包${RESET}"
     fi
-    echo "  ${DIM}可选依赖（二维码 qrencode / dig / ss 等）不自动安装：用到时才问你 y/N。${RESET}"
-    echo "  ${DIM}订阅服务默认不开 —— 装好后需要时再到菜单里自行选择并启动。${RESET}"
+    echo "  ${DIM}可选依赖（二维码 / dig / ss 等）用到时才问；订阅服务默认不开${RESET}"
     echo
     choose_install_channel || return 1
     echo
