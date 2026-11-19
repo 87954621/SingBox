@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.31"
+VERSION="V3.9.32"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -1537,7 +1537,7 @@ add_naive(){
     sni_maybe_optimize
     if ! version_ge "1.15.0" "$(sb_version)"; then
         warn "NaiveProxy 需要 sing-box 1.15.0+（当前 $(sb_version)），无法创建"
-        info "可到「sing-box 内核管理 → 2 升级 / 切换内核版本」切到最新测试版"
+        info "可到「菜单 5 → 内核管理 → 2 升级」切到最新测试版"
         return 1
     fi
     local p user pw s
@@ -1664,7 +1664,7 @@ ensure_http_version(){
     http_version_supported && return 0
     if [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
         warn "当前是 Alpine 系统包版 sing-box $(sb_version)，不含 http.version 字段（需 1.15.0+）"
-        echo "  ${DIM}HTTP/3 无法使用；HTTP/2 会按兼容模式创建。要全套协议请到「sing-box 管理 → 2」换官方二进制。${RESET}"
+        echo "  ${DIM}HTTP/3 无法使用；HTTP/2 会按兼容模式创建。要全套协议请到「菜单 5 → 内核管理 → 2」换官方二进制。${RESET}"
         return 1
     fi
     if [ "${BATCH_MODE:-0}" = "1" ]; then
@@ -1747,7 +1747,7 @@ add_http3(){
             info "已取消 HTTP/3 部署"
         else
             warn "HTTP/3 必须要有 version 字段，无法按兼容模式创建"
-            info "可先用「sing-box 内核管理 → 2」换到 1.15.0+ 再回来部署"
+            info "可先用「菜单 5 → 内核管理 → 2」换到 1.15.0+ 再回来部署"
         fi
         return 1
     fi
@@ -2044,13 +2044,13 @@ mem_report(){
     echo "  ${BOLD}省内存建议${RESET}"
     if [ "$ni" -gt 4 ] 2>/dev/null; then
         echo "    · ${BOLD}当前 ${ni} 个 inbound，这是最大的一块${RESET}：每个都要常驻一份 TLS/QUIC"
-        echo "      上下文与连接缓冲区。建议只留 1~3 个协议（主菜单 3 → 删除节点）。"
+        echo "      上下文与连接缓冲区。建议只留 1~3 个协议（主菜单 2「节点管理」→ 删除）。"
     fi
     if [ "$rs_cf" -gt 0 ] 2>/dev/null; then
-        echo "    · cloudflared 常驻 ${rs_cf}M（Go 写的，正常就这么多）。不用 Argo 就到主菜单 12 停掉。"
+        echo "    · cloudflared 常驻 ${rs_cf}M（Go 写的，正常就这么多）。不用 Argo 就到主菜单 7「Argo 隧道」停掉。"
     fi
     if [ "${SUBHTTP_ENABLED:-0}" = "1" ] && [ "${SUBHTTP_BACKEND:-}" != "nginx" ]; then
-        echo "    · 订阅服务当前是 Python 后端；换 nginx 更省（主菜单 11 → 换实现方式）。"
+        echo "    · 订阅服务当前是 Python 后端；换 nginx 更省（主菜单 6 → 订阅服务 → 换实现方式）。"
         echo "      或用「导出文件 / 复制链接」完全不开订阅服务，空闲就是零进程零内存。"
     fi
     if [ "$lvl" = "info" ]; then
@@ -2086,13 +2086,13 @@ lowmem_ensure_unit(){
         f="/etc/systemd/system/sing-box.service"
         if [ -f "$f" ] && ! grep -q 'go-env' "$f" 2>/dev/null; then
             info "检测到旧版服务单元，重写以接入低内存模式 ..."
-            install_service >/dev/null 2>&1 || warn "重写服务单元失败，可到主菜单 14 自检 / 修复"
+            install_service >/dev/null 2>&1 || warn "重写服务单元失败，可到主菜单 8「系统与自检」修复"
         fi ;;
       openrc)
         f="/etc/init.d/sing-box"
         if [ -f "$f" ] && ! grep -q 'go-env' "$f" 2>/dev/null; then
             info "检测到旧版 OpenRC 服务脚本，重写以接入低内存模式 ..."
-            install_service >/dev/null 2>&1 || warn "重写服务脚本失败，可到主菜单 14 自检 / 修复"
+            install_service >/dev/null 2>&1 || warn "重写服务脚本失败，可到主菜单 8「系统与自检」修复"
         fi ;;
     esac
     return 0
@@ -2108,7 +2108,7 @@ lowmem_restart(){
     fi
     if command -v argo_svc_running >/dev/null 2>&1 && argo_svc_running >/dev/null 2>&1; then
         info "重启 Argo 隧道 ..."
-        argo_svc_restart >/dev/null 2>&1 || warn "Argo 重启失败，可到主菜单 12 手动重启"
+        argo_svc_restart >/dev/null 2>&1 || warn "Argo 重启失败，可到主菜单 7「Argo 隧道」手动重启"
     fi
 }
 lowmem_apply(){
@@ -2120,10 +2120,10 @@ lowmem_apply(){
     else ok "低内存模式已关闭：不限制 Go 堆"; fi
     echo "    环境变量写在 ${BASE}/go-env，服务每次启动都会重读。"
     if service_alive && _ask "  现在重启 sing-box 使其生效？[Y/n] "; then
-        case "${_ASK_VALUE:-Y}" in n|N|no|NO) echo "    已跳过；可在主菜单 8 → 2 手动重启" ;;
+        case "${_ASK_VALUE:-Y}" in n|N|no|NO) echo "    已跳过；可在主菜单 5「服务与内核」→ 服务管理 手动重启" ;;
             *) lowmem_restart ;; esac
     else
-        echo "    重启服务后生效（主菜单 8 → 2，或本菜单第 5 项）。"
+        echo "    重启服务后生效（主菜单 5「服务与内核」→ 服务管理 重启）。"
     fi
 }
 lowmem_menu(){
@@ -4133,7 +4133,7 @@ show_nodes(){
         [ -n "$nlink" ] && printf '      %s└─%s  %s%s%s\n' "$DIM" "$RESET" "$CYAN" "$nlink" "$RESET"
     done < <(jq -c '.[]' "$NODES")
     hr
-    info "共 ${i} 个节点；完整链接见「订阅与节点链接」，或「管理节点 → 5」扫码导入。"
+    info "共 ${i} 个节点；完整链接见主菜单 6「订阅」，或「节点管理」里扫码导入。"
 }
 copy_links(){
     get_ip
@@ -5359,7 +5359,7 @@ self_repair(){
             [ -n "$_ot" ] || continue
             printf '    · %-24s 端口 %s\n' "$_ot" "$_op"
         done
-        echo "    清理入口：主菜单 3（节点管理）→ 8"
+        echo "    清理入口：主菜单 2「节点管理」→ 清理孤儿"
         bad=1
     else
         echo "✓ 没有孤儿 inbound（配置与节点列表一致）"
@@ -6082,7 +6082,7 @@ batch_menu(){
         echo
         warn "以下协议与当前内核不兼容，已自动跳过（不影响其它协议）："
         printf '%b\n' "$_skip_msg"
-        echo "  ${DIM}→ 想用它们请先到「sing-box 内核管理 → 2」切到最新测试版${RESET}"
+        echo "  ${DIM}→ 想用它们请先到「菜单 5 → 内核管理 → 2」切到最新测试版${RESET}"
     fi
     _rawlist="$_kept"
     if [ -z "$_rawlist" ]; then
@@ -6216,7 +6216,7 @@ batch_menu(){
               [ -n "$_cerr" ] && warn "  报错：$_cerr"
               local _cver=""
               _cver="$(sb_version 2>/dev/null)"
-              [ -n "$_cver" ] && warn "  当前内核：v$_cver（部分新协议需 1.15.0+；可到「sing-box 内核管理 → 2」升级）"
+              [ -n "$_cver" ] && warn "  当前内核：v$_cver（部分新协议需 1.15.0+；可到「菜单 5 → 内核管理 → 2」升级）"
               [ -f "$_before" ] && mv -f "$_before" "$CONF" 2>/dev/null || true
               del_node_by_raw "$c" >/dev/null 2>&1 || true
               failc=$((failc+1))
@@ -6303,7 +6303,7 @@ client_menu(){
     echo "  7. Clash 分流规则（七组分流 / 精简模式）"
     echo "  0. 返回"
     echo
-    info "要找「入站 IP / 端口映射」？已移到主菜单第 6 项。"
+    info "要找「入站 IP / 端口映射」？在菜单 3「网络与端口」里。"
     read -r -p "请选择： " c || c=""
     case "$c" in
       1)
@@ -6962,7 +6962,7 @@ sub_menu(){
         echo "  ${GREEN}●${RESET} 订阅服务已开启，客户端填这一个地址即可："
         echo "    ${CYAN}$(sub_url 2>/dev/null)${RESET}"
     else
-        echo "  ${DIM}○ 订阅服务未开启 —— 开启后可用「一个 URL 适配所有客户端」（见 8，或主菜单 11）${RESET}"
+        echo "  ${DIM}○ 订阅服务未开启 —— 开启后可用「一个 URL 适配所有客户端」（主菜单 6「订阅」→ 订阅服务）${RESET}"
     fi
     echo
     echo "1. 一键复制全部链接（OSC52）"
@@ -6972,7 +6972,7 @@ sub_menu(){
     echo "5. 查看 / 复制 小火箭 / 通用订阅（纯标准链接，v2rayA 等也用它）"
     echo "6. 查看 sing-box 配置"
     echo "7. 订阅链接二维码（手机扫码导入）"
-    echo "8. 订阅服务（后端 / 订阅 URL / 日志 —— 主菜单 11 也是它）"
+    echo "8. 订阅服务（主菜单 6「订阅」→ 订阅服务，是同一个）"
     echo "0. 返回"
     read -r -p "请选择： " x || x=""
     case "$x" in
@@ -7102,7 +7102,7 @@ clash_sub_menu(){
             fi
         else
             echo "    ${YELLOW}订阅服务没开，这个地址现在打不开${RESET}"
-            echo "    ${DIM}先到「订阅服务」（主菜单 11）启动，再用：${RESET}"
+            echo "    ${DIM}先到主菜单 6「订阅」→ 订阅服务 启动，再用：${RESET}"
             echo "    ${DIM}${_url}${RESET}"
         fi
         echo
@@ -7155,6 +7155,133 @@ qr_menu(){
   done
 }
 
+network_detect_menu(){
+    detect_network
+    panel "网络检测结果"
+    kv "公网 IPv4" "${PUB4:-无}"
+    kv "公网 IPv6" "${PUB6:-无}"
+    kv "内网 IPv4" "${LOCAL4:-无}"
+    kv "NAT 判定" "$NAT_HINT"
+    kv "UDP 判定" "$UDP_HINT"
+    hr
+    if [ "$UDP_OK" = "0" ]; then
+        info "当前：UDP 不可用，协议菜单只显示 TCP"
+    else
+        info "当前：UDP 可用，协议菜单显示全部"
+    fi
+    echo
+    echo "1. 保持当前判定"
+    echo "2. 强制按「UDP 可用」显示全部协议"
+    echo "3. 强制按「UDP 不可用」只显示 TCP 协议"
+    echo "0. 返回"
+    local u=""
+    read -r -p "请选择： " u || u=""
+    case "$u" in
+      1|0) : ;;
+      2) UDP_OK=1; UDP_HINT="用户手动设为可用"; ok "已切换为显示全部协议" ;;
+      3) UDP_OK=0; UDP_HINT="用户手动设为不可用"; ok "已切换为只显示 TCP 协议" ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+    case "$u" in
+      2|3)
+        mkdir -p "$BASE" 2>/dev/null
+        printf '%s|%s|%s|%s\n' "$(now_epoch)" "$UDP_OK" "$NAT_HINT" "$LOCAL4" \
+            > "$BASE/.net.cache" 2>/dev/null || true
+        ;;
+    esac
+}
+
+deploy_menu(){
+  while :; do
+    clear; panel "节点部署"
+    echo "1. 部署单个协议"
+    echo "2. 批量部署（单选 / 多选 / all）"
+    echo "3. Argo 隧道节点（无公网端口时用）"
+    echo "0. 返回"
+    local d=""
+    read -r -p "请选择： " d || d=""
+    case "$d" in
+      1) node_menu ;;
+      2) batch_menu ;;
+      3) argo_menu ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
+network_menu(){
+  while :; do
+    clear; panel "网络与端口"
+    echo "1. 端口范围 / 默认端口"
+    echo "2. 网络检测 / UDP 模式"
+    echo "3. 入站 IP / 端口映射（客户端连不上时用）"
+    echo "0. 返回"
+    local n=""
+    read -r -p "请选择： " n || n=""
+    case "$n" in
+      1) port_menu ;;
+      2) network_detect_menu; pause ;;
+      3) advertise_menu ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
+service_hub_menu(){
+  while :; do
+    clear; panel "服务与内核"
+    echo "1. 服务管理（启停 / 重启 / 配置检查 / 内存模式）"
+    echo "2. 内核管理（版本 / 升级 / 重装）"
+    echo "3. 检查管理器更新"
+    echo "0. 返回"
+    local h=""
+    read -r -p "请选择： " h || h=""
+    case "$h" in
+      1) service_menu ;;
+      2) singbox_menu ;;
+      3) check_update; pause ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
+subscription_menu(){
+  while :; do
+    clear; panel "订阅"
+    echo "1. 导出节点链接 / 配置文件"
+    echo "2. 订阅服务（后端 / URL / 日志）"
+    echo "0. 返回"
+    local b=""
+    read -r -p "请选择： " b || b=""
+    case "$b" in
+      1) sub_menu ;;
+      2) subhttp_menu ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
+system_hub_menu(){
+  while :; do
+    clear; panel "系统与自检"
+    echo "1. 系统信息"
+    echo "2. 自检 / 修复"
+    echo "0. 返回"
+    local y=""
+    read -r -p "请选择： " y || y=""
+    case "$y" in
+      1) clear; system_info; pause ;;
+      2) self_repair ;;
+      0) return ;;
+      *) warn "无效选项"; sleep 1 ;;
+    esac
+  done
+}
+
 menu(){
   while :; do
     clear
@@ -7198,7 +7325,7 @@ menu(){
         local _subres="$(sub_resource 2>/dev/null)"
         kv "订阅服务" "$(status_dot 1) ${GREEN}运行中${RESET}  ${DIM}:${SUBHTTP_LISTEN:-8088}${RESET}  ${_subres}"
     else
-        kv "订阅服务" "$(status_dot 0) ${DIM}未开启${RESET}  ${DIM}(菜单 11 开启)${RESET}"
+        kv "订阅服务" "$(status_dot 0) ${DIM}未开启${RESET}  ${DIM}(菜单 6 → 订阅服务开启)${RESET}"
     fi
     if [ "${_argocnt:-0}" -gt 0 ] 2>/dev/null; then
         if argo_svc_running 2>/dev/null; then
@@ -7206,7 +7333,7 @@ menu(){
             _argores="$(argo_resource 2>/dev/null)"
             kv "Argo 隧道" "$(status_dot 1) ${GREEN}运行中${RESET}  ${DIM}${_argocnt} 个节点${RESET}  ${_argores}"
         else
-            kv "Argo 隧道" "$(status_dot 0) ${RED}已停止${RESET}  ${DIM}${_argocnt} 个节点（主菜单 12 启动）${RESET}"
+            kv "Argo 隧道" "$(status_dot 0) ${RED}已停止${RESET}  ${DIM}${_argocnt} 个节点（菜单 7 启动）${RESET}"
         fi
     fi
     kv "系统" "${OS} ${VER}"
@@ -7233,88 +7360,40 @@ menu(){
     fi
     hr
 
-    local i=1
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "节点部署"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "批量部署（单选/多选/all）"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "节点管理"; i=$((i+1))
+    printf '  %s%2d.%s %s\n' "$BOLD" 1 "$RESET" "节点部署（单协议 / 批量 / Argo）"
+    printf '  %s%2d.%s %s\n' "$BOLD" 2 "$RESET" "节点管理（改端口 / 链接 / 扫码 / 删除）"
     echo
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "端口范围 / 默认端口"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "网络检测 / UDP 模式"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "入站 IP / 端口映射（客户端连不上时用）"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "客户端设置（指纹 / UoT / SNI）"; i=$((i+1))
+    printf '  %s%2d.%s %s\n' "$BOLD" 3 "$RESET" "网络与端口（端口 / 网络检测 / 入站映射）"
+    printf '  %s%2d.%s %s\n' "$BOLD" 4 "$RESET" "客户端设置（指纹 / UoT / SNI）"
     echo
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "服务管理（启停 / 重启 / 配置检查）"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "sing-box 管理（内核版本 / 升级 / 重装）"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "订阅与节点链接"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "订阅服务（后端 / 订阅 URL / 日志）"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "Argo 隧道（CF 内网穿透 / 隧道状态）"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "系统信息"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "自检 / 修复"; i=$((i+1))
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "完全卸载（内核 + 配置 + 节点 + 本脚本）"; i=$((i+1))
+    printf '  %s%2d.%s %s\n' "$BOLD" 5 "$RESET" "服务与内核（启停 / 升级 / 内存 / 更新）"
+    printf '  %s%2d.%s %s\n' "$BOLD" 6 "$RESET" "订阅（节点链接 / 订阅服务）"
+    printf '  %s%2d.%s %s\n' "$BOLD" 7 "$RESET" "Argo 隧道（CF 内网穿透 / 隧道状态）"
     echo
-    printf '  %s%2d.%s %s\n' "$BOLD" "$i" "$RESET" "检查更新（管理器）"; i=$((i+1))
+    printf '  %s%2d.%s %s\n' "$BOLD" 8 "$RESET" "系统与自检"
+    printf '  %s%2d.%s %s\n' "$BOLD" 9 "$RESET" "完全卸载（内核 + 配置 + 节点 + 本脚本）"
     echo
     printf '  %s%2d.%s %s\n' "$BOLD" "0" "$RESET" "退出"
     echo
-    echo "  ${DIM}快捷：${RESET}${BOLD}r${RESET}${DIM}=重启服务  ${RESET}${BOLD}e${RESET}${DIM}=导出全部客户端配置  ${RESET}${BOLD}s${RESET}${DIM}=服务状态  ${RESET}${BOLD}v${RESET}${DIM}=内核版本${RESET}"
+    echo "  ${DIM}快捷：${RESET}${BOLD}r${RESET}${DIM}=重启  ${RESET}${BOLD}e${RESET}${DIM}=导出全部  ${RESET}${BOLD}s${RESET}${DIM}=状态  ${RESET}${BOLD}v${RESET}${DIM}=内核版本${RESET}"
     echo
     read -r -p "请选择： " c || c=""
     case "$c" in
-      1) node_menu ;;
-      2) batch_menu ;;
-      3) manage_nodes ;;
-      4) port_menu ;;
-      5)
-        detect_network
-        panel "网络检测结果"
-        kv "公网 IPv4" "${PUB4:-无}"
-        kv "公网 IPv6" "${PUB6:-无}"
-        kv "内网 IPv4" "${LOCAL4:-无}"
-        kv "NAT 判定" "$NAT_HINT"
-        kv "UDP 判定" "$UDP_HINT"
-        hr
-        if [ "$UDP_OK" = "0" ]; then
-            info "当前：UDP 不可用，协议菜单只显示 TCP"
-        else
-            info "当前：UDP 可用，协议菜单显示全部"
-        fi
-        echo
-        echo "1. 保持当前判定"
-        echo "2. 强制按「UDP 可用」显示全部协议"
-        echo "3. 强制按「UDP 不可用」只显示 TCP 协议"
-        echo "0. 返回"
-        read -r -p "请选择： " u || u=""
-        case "$u" in
-          1) : ;;
-          2) UDP_OK=1; UDP_HINT="用户手动设为可用"; ok "已切换为显示全部协议" ;;
-          3) UDP_OK=0; UDP_HINT="用户手动设为不可用"; ok "已切换为只显示 TCP 协议" ;;
-          0) : ;;
-        esac
-        case "$u" in
-          2|3)
-            mkdir -p "$BASE" 2>/dev/null
-            printf '%s|%s|%s|%s\n' "$(now_epoch)" "$UDP_OK" "$NAT_HINT" "$LOCAL4" \
-                > "$BASE/.net.cache" 2>/dev/null || true
-            ;;
-        esac
-        pause ;;
-      6) advertise_menu ;;
-      7) client_menu ;;
-      8) service_menu ;;
-      9) singbox_menu ;;
-      10) sub_menu ;;
-      11) subhttp_menu ;;
-      12) argo_menu ;;
-      13) clear; system_info; pause ;;
-      14) self_repair ;;
-      15) uninstall ;;
-      16) check_update ;;
+      1) deploy_menu ;;
+      2) manage_nodes ;;
+      3) network_menu ;;
+      4) client_menu ;;
+      5) service_hub_menu ;;
+      6) subscription_menu ;;
+      7) argo_menu ;;
+      8) system_hub_menu ;;
+      9) uninstall ;;
       0) exit 0 ;;
       r|R) apply; pause ;;
-      e|E) clear; export_all; ok "已导出 Clash / v2rayN / 小火箭配置到 ${SUBDIR}"; pause ;;
+      e|E) clear; export_all; ok "已导出到 ${SUBDIR}"; pause ;;
       s|S) clear; status; pause ;;
       v|V) clear; sb_version_detail; pause ;;
-      *) warn "无效选项：请输入 0-16 的编号，或快捷键 r/e/s/v"; sleep 1 ;;
+      *) warn "无效选项：请输入 0-9 的编号，或快捷键 r/e/s/v"; sleep 1 ;;
     esac
   done
 }
@@ -7372,7 +7451,7 @@ system_info(){
     case "$_ma" in ''|*[!0-9]*) _ma="?" ;; esac
     case "$_ms" in ''|*[!0-9]*) _ms=0 ;; esac
     kv "物理内存" "${_mt} MiB   可用 ${_ma} MiB   Swap ${_ms} MiB"
-    kv "低内存模式" "$([ "${LOW_MEM_MODE:-0}" = "1" ] && echo "${GREEN}已开启${RESET}（Go 堆软上限 $(_go_mem_limit) MiB）" || echo "未开启   ${DIM}入口：主菜单 8 → 6${RESET}")"
+    kv "低内存模式" "$([ "${LOW_MEM_MODE:-0}" = "1" ] && echo "${GREEN}已开启${RESET}（Go 堆软上限 $(_go_mem_limit) MiB）" || echo "未开启   ${DIM}入口：菜单 5 → 服务管理 → 6${RESET}")"
     hr
     kv "系统" "$OS $VER"
     kv "架构" "$(uname -m) -> $ARCH"
@@ -7408,8 +7487,7 @@ uninstall(){
         echo "        ${DIM}cloudflared 是本脚本之外装的，稍后会问你要不要一并卸载。${RESET}"
     fi
     if [ -L "$BIN" ] || [ "${INSTALL_SOURCE:-github}" = "apk" ]; then
-        echo "  ${YELLOW}⚠ 内核来自 Alpine 软件源：只删除本脚本创建的 $BIN 软链，系统包不会被动。${RESET}"
-        echo "  ${DIM}  确实要连系统包一起卸载，请自行执行：apk del sing-box sing-box-openrc${RESET}"
+        echo "  ${YELLOW}内核来自 Alpine 软件源：稍后会问你要不要把系统包 sing-box 一起卸载。${RESET}"
     fi
     echo "不会主动修改系统已有防火墙规则。"
     read -r -p "输入 DELETE 确认： " x || x=""
@@ -7486,6 +7564,24 @@ uninstall(){
             if nginx_uninstall; then ok "nginx 已卸载"; else warn "nginx 卸载失败，请手动执行对应包管理器卸载 nginx"; fi
             ;;
           *) info "已跳过卸载 nginx 包（仅移除了本脚本的站点配置）" ;;
+        esac
+    fi
+
+    if _apk_available && { [ -L "$BIN" ] || [ "${INSTALL_SOURCE:-github}" = "apk" ]; }; then
+        echo
+        echo "  ${YELLOW}⚠ 内核是 Alpine 系统包（apk）安装的${RESET}"
+        echo "  ${DIM}  卸载它会释放 /usr/bin/sing-box 及依赖；若别的程序也依赖 sing-box 请选 N。${RESET}"
+        read -r -p "  是否同时卸载 sing-box 系统包？[y/N]： " c || c=""
+        case "$c" in
+          [Yy])
+            progress 70 "卸载 Alpine sing-box 系统包"
+            if apk del sing-box sing-box-openrc >/dev/null 2>&1; then
+                ok "sing-box 系统包已卸载"
+            else
+                warn "系统包卸载失败，可手动执行：apk del sing-box sing-box-openrc"
+            fi
+            ;;
+          *) info "已保留系统包（只删本脚本的软链）；日后可手动 apk del sing-box" ;;
         esac
     fi
 
@@ -7627,7 +7723,7 @@ confirm_install(){
     if [ -n "$_mt0" ]; then
         echo "    ${DIM}物理内存${RESET}  ${_mt0} MiB"
         if [ "$_mt0" -le 512 ] 2>/dev/null; then
-            echo "  ${DIM}小内存机器将自动开启低内存模式（可在「服务管理 → 6」关闭）${RESET}"
+            echo "  ${DIM}小内存机器将自动开启低内存模式（可在菜单 5「服务管理」→ 6 关闭）${RESET}"
         fi
     fi
     echo
@@ -7903,7 +7999,7 @@ _apk_init_backup(){
         cp -f /etc/init.d/sing-box "${BASE}/init-from-apk.bak" 2>/dev/null || true
         warn "检测到 /etc/init.d/sing-box 属于 Alpine 软件包；本脚本会接管为指向 $CONF 的服务文件"
         echo  "    原件已备份：${BASE}/init-from-apk.bak"
-        echo  "    apk 日后升级 sing-box-openrc 可能覆盖它，届时到「服务管理 → 6」或「14 自检/修复」重建"
+        echo  "    apk 日后升级 sing-box-openrc 可能覆盖它，届时到菜单 5「服务管理」→ 6 或菜单 8「系统与自检」重建"
     fi
     return 0
 }
