@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.26"
+VERSION="V3.9.29"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -236,10 +236,17 @@ attach_tty(){
 progress(){
     local pct="$1" label="$2" width=42 filled empty
     filled=$((pct*width/100)); empty=$((width-filled))
-    printf "\r\033[K${CYAN}["
-    printf "%${filled}s" "" | tr ' ' '#'
-    printf "%${empty}s" "" | tr ' ' '-'
-    printf "]${RESET} %3d%% %s\n" "$pct" "$label"
+    if [ "${_SB_LOWMEM_FORK:-0}" = "1" ]; then
+        local _bar="" _i
+        for ((_i=0; _i<filled; _i++)); do _bar+="#"; done
+        for ((_i=0; _i<empty;  _i++)); do _bar+="-"; done
+        printf "\r\033[K${CYAN}[${_bar}]${RESET} %3d%% %s\n" "$pct" "$label"
+    else
+        printf "\r\033[K${CYAN}["
+        printf "%${filled}s" "" | tr ' ' '#'
+        printf "%${empty}s" "" | tr ' ' '-'
+        printf "]${RESET} %3d%% %s\n" "$pct" "$label"
+    fi
 }
 
 COUNTRY_CODE=""; COUNTRY_NAME=""
@@ -7652,6 +7659,11 @@ confirm_install(){
 }
 initial_install(){
     need_root
+    _INSTALL_MEM_MB="$(_sys_mem_total_mb)"
+    case "${_INSTALL_MEM_MB:-}" in ''|*[!0-9]*) _INSTALL_MEM_MB="" ;; esac
+    if [ -n "$_INSTALL_MEM_MB" ] && [ "$_INSTALL_MEM_MB" -le 128 ] 2>/dev/null; then
+        export _SB_LOWMEM_FORK=1
+    fi
     INSTALL_CHANNEL_PRESET="${SINGBOX_CHANNEL:-}"
     progress 5 "检测系统环境"
     detect_os
@@ -7675,8 +7687,7 @@ initial_install(){
         APK_USE_EDGE="$APK_EDGE_CHOICE"
     fi
     if [ "$_fresh" = "1" ]; then
-        _mt1="$(_sys_mem_total_mb)"
-        case "$_mt1" in ''|*[!0-9]*) _mt1="" ;; esac
+        _mt1="${_INSTALL_MEM_MB:-}"
         if [ -n "$_mt1" ] && [ "$_mt1" -le 512 ] 2>/dev/null; then
             LOW_MEM_MODE=1
             info "检测到 ${_mt1} MiB 小内存，已自动开启低内存模式"
@@ -7699,8 +7710,7 @@ initial_install(){
             APK_USE_EDGE=0
             INSTALL_SOURCE="github"
             local _mem_mb=""
-            _mem_mb="$(_sys_mem_total_mb)"
-            case "$_mem_mb" in ''|*[!0-9]*) _mem_mb="" ;; esac
+            _mem_mb="${_INSTALL_MEM_MB:-}"
             if [ -n "$_mem_mb" ] && [ "$_mem_mb" -le 128 ] 2>/dev/null; then
                 export _SB_LOWMEM_DOWNLOAD=1
                 echo  "    检测到 ${_mem_mb} MiB 极小内存，下载将用磁盘临时目录 + 流式解压降低内存峰值"
@@ -7832,15 +7842,15 @@ _apk_available(){
 _apk_pkg_version(){
     _apk_available || return 1
     local out="" v=""
-    out="$(run_with_timeout 12 apk search -x sing-box 2>/dev/null)" || out=""
+    out="$(apk search -x sing-box 2>/dev/null)" || out=""
     v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
     if [ -z "$v" ]; then
-        run_with_timeout 25 apk update >/dev/null 2>&1 || true
-        out="$(run_with_timeout 12 apk search -x sing-box 2>/dev/null)" || out=""
+        apk update >/dev/null 2>&1 || true
+        out="$(apk search -x sing-box 2>/dev/null)" || out=""
         v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
     fi
     if [ -z "$v" ]; then
-        out="$(run_with_timeout 12 apk policy sing-box 2>/dev/null)" || out=""
+        out="$(apk policy sing-box 2>/dev/null)" || out=""
         v="$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]\{1,\}\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\):[[:space:]]*$/\1/p' | head -n1)"
     fi
     [ -n "$v" ] || return 1
@@ -7858,11 +7868,11 @@ _apk_edge_pkg_version(){
     local repo out="" v=""
     for repo in "$APK_EDGE_REPO" "${APK_EDGE_REPO_ALT:-}"; do
         [ -n "$repo" ] || continue
-        out="$(run_with_timeout 45 apk search -x -X "$repo" sing-box 2>/dev/null)" || out=""
+        out="$(apk search -x -X "$repo" sing-box 2>/dev/null)" || out=""
         v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
         if [ -z "$v" ]; then
-            run_with_timeout 45 apk update -X "$repo" >/dev/null 2>&1 || true
-            out="$(run_with_timeout 20 apk search -x -X "$repo" sing-box 2>/dev/null)" || out=""
+            apk update -X "$repo" >/dev/null 2>&1 || true
+            out="$(apk search -x -X "$repo" sing-box 2>/dev/null)" || out=""
             v="$(printf '%s\n' "$out" | sed -n 's/^sing-box-\([0-9][0-9A-Za-z._+]*-r[0-9][0-9]*\).*$/\1/p' | head -n1)"
         fi
         [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
@@ -7885,17 +7895,12 @@ _apk_init_backup(){
 install_singbox_from_apk(){
     _apk_available || { warn "本机不是 Alpine 或没有 apk，无法使用系统包版"; return 1; }
     local _log="${LOGDIR:-/tmp}/apk-install.log" _sysbin="" _ver=""
-    local _rc=1 _repo="" _n=0
+    local _rc=1
     info "正在从 Alpine 软件源安装 sing-box（不访问 GitHub）..."
     : > "$_log" 2>/dev/null || _log="/tmp/singbox-nat-apk.log"
     if [ "${APK_USE_EDGE:-0}" = "1" ]; then
         apk update >>"$_log" 2>&1 || true
-        for _repo in "$APK_EDGE_REPO" "${APK_EDGE_REPO_ALT:-}"; do
-            [ -n "$_repo" ] || continue
-            _n=$((_n + 1))
-            [ "$_n" -gt 1 ] && printf '\n---- 主源失败，改用备用地址 %s ----\n' "$_repo" >>"$_log"
-            if apk add --repository="$_repo" sing-box >>"$_log" 2>&1; then _rc=0; break; fi
-        done
+        if apk add --repository="$APK_EDGE_REPO" sing-box >>"$_log" 2>&1; then _rc=0; fi
     else
         if apk add --no-cache sing-box >"$_log" 2>&1; then _rc=0; fi
     fi
