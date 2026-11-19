@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.32"
+VERSION="V3.9.33"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -297,6 +297,15 @@ country_zh(){
         EE) echo "爱沙尼亚" ;;    MD) echo "摩尔多瓦" ;;   RS) echo "塞尔维亚" ;;
         *) echo "" ;;
     esac
+}
+
+country_flag(){
+    local cc="${1^^}" a b o=""
+    [[ "$cc" =~ ^[A-Z]{2}$ ]] || return 1
+    a=$(( 0x1F1E6 + $(printf '%d' "'${cc:0:1}") - 65 ))
+    b=$(( 0x1F1E6 + $(printf '%d' "'${cc:1:1}") - 65 ))
+    printf -v o "\\U$(printf '%X' "$a")\\U$(printf '%X' "$b")"
+    printf '%s' "$o"
 }
 
 now_time(){ date '+%Y-%m-%d %H:%M:%S'; }
@@ -1234,8 +1243,11 @@ append_inbound(){
     jq --argjson x "$x" '.inbounds += [$x]' "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
 }
 node_name_default(){
-    local label="$1" pre="${NODE_NAME_PREFIX:-}"
-    [ -n "$pre" ] || pre="${COUNTRY_NAME:-}"
+    local label="$1" pre="${NODE_NAME_PREFIX:-}" flag=""
+    if [ -z "$pre" ]; then
+        flag="$(country_flag "${COUNTRY_CODE:-}" 2>/dev/null)" || flag=""
+        pre="$flag"
+    fi
     if [ -n "$pre" ]; then printf '%s %s' "$pre" "$label"; else printf '%s' "$label"; fi
 }
 resolve_node_name(){
@@ -1269,7 +1281,10 @@ add_node(){
     return 0
 }
 rename_nodes_default(){
-    local pre="${NODE_NAME_PREFIX:-${COUNTRY_NAME:-}}"
+    local pre="${NODE_NAME_PREFIX:-}"
+    if [ -z "$pre" ]; then
+        pre="$(country_flag "${COUNTRY_CODE:-}" 2>/dev/null)" || pre=""
+    fi
     jq --arg pre "$pre" '
       map( .proto_label = (.proto_label // .name)
          | .name = (if ($pre|length) > 0 then ($pre + " " + .proto_label) else .proto_label end) )' \
@@ -6270,7 +6285,8 @@ client_menu(){
     else
         kv "UDP over TCP" "${DIM}已关闭${RESET}"
     fi
-    local _nm_pre="${NODE_NAME_PREFIX:-${COUNTRY_NAME:-}}"
+    local _nm_pre="${NODE_NAME_PREFIX:-}"
+    [ -n "$_nm_pre" ] || _nm_pre="$(country_flag "${COUNTRY_CODE:-}" 2>/dev/null)" || _nm_pre=""
     if [ -n "$_nm_pre" ]; then
         kv "节点命名" "${_nm_pre} <协议类型>"
     else
@@ -6298,7 +6314,7 @@ client_menu(){
     echo "  2. 切换 UDP over TCP（UoT）"
     echo "  3. SNI 域名优选（实测 TLS 握手，自动选最快的）"
     echo "  4. 手动指定默认 SNI 域名"
-    echo "  5. 节点命名（默认 国家/地区 + 协议类型，可自定义前缀）"
+    echo "  5. 节点命名（默认 国旗 + 协议类型，可自定义前缀）"
     echo "  6. 证书放行策略（自签证书要不要跳过校验）"
     echo "  7. Clash 分流规则（七组分流 / 精简模式）"
     echo "  0. 返回"
@@ -6398,14 +6414,14 @@ client_menu(){
       5)
         echo
         echo "${BOLD}节点命名规则${RESET}"
-        echo "  新建节点时的名字 =「前缀 + 协议类型」，例如："
-        echo "    ${CYAN}中国香港 VLESS + Reality${RESET}  /  ${CYAN}中国香港 Hysteria2${RESET}"
+        echo "  新建节点时的名字 =「国旗 + 协议类型」，例如："
+        echo "    ${CYAN}🇯🇵 VLESS + Reality${RESET}  /  ${CYAN}🇯🇵 Hysteria2${RESET}"
         echo
-        echo "  当前国家/地区：${BOLD}${COUNTRY_NAME:-未探测到}${RESET}"
-        echo "  当前自定义前缀：${BOLD}${NODE_NAME_PREFIX:-（未设置，用国家/地区名）}${RESET}"
+        echo "  当前国家/地区：${BOLD}${COUNTRY_NAME:-未探测到}${RESET}  国旗 ${BOLD}$(country_flag "${COUNTRY_CODE:-}" 2>/dev/null)${RESET}"
+        echo "  当前自定义前缀：${BOLD}${NODE_NAME_PREFIX:-（未设置，用国旗）}${RESET}"
         echo
-        echo "  1. 设置自定义前缀（如 HK-01 / 香港01 / Tokyo）"
-        echo "  2. 清空前缀，改用国家/地区名"
+        echo "  1. 设置自定义前缀（如 HK-01 / 香港01 / Tokyo，优先于国旗）"
+        echo "  2. 清空前缀，改回用国旗"
         echo "  3. 立即把已有节点按当前规则重命名"
         echo "  0. 返回"
         read -r -p "请选择： " nn || nn=""
@@ -6418,7 +6434,7 @@ client_menu(){
             else
               info "已取消"
             fi ;;
-          2) NODE_NAME_PREFIX=""; save_settings; ok "已改为使用国家/地区名" ;;
+          2) NODE_NAME_PREFIX=""; save_settings; ok "已改回用国旗作前缀" ;;
           3)
             if rename_nodes_default; then
               export_all >/dev/null 2>&1
