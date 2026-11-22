@@ -69,7 +69,7 @@ OS="unknown"; VER=""; ARCH=""; INIT="none"
 REALITY_PRIVATE=""; REALITY_PUBLIC=""
 BATCH_MODE=0; SB_RUN_MENU=0
 SB_ASSUME_DEFAULTS="${SB_ASSUME_DEFAULTS:-0}"
-BATCH_RESERVE=16
+BATCH_RESERVE=18
 CURRENT_SNAPSHOT=""; FINGERPRINT="chrome"; UOT_ENABLED="0"
 CLASH_RULE_MODE="full"
 PREFERRED_SNI=""; SNI_OPTIMIZED=""
@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.33"
+VERSION="V3.9.34"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -954,7 +954,7 @@ choose_port(){
         local seed=""
         [ -s "$seedfile" ] && seed="$(cat "$seedfile" 2>/dev/null)"
         if [ -z "$seed" ]; then
-            seed="$(rand_free_port "$proto" "${BATCH_RESERVE:-16}")" || {
+            seed="$(rand_free_port "$proto" "${BATCH_RESERVE:-18}")" || {
                 warn "端口范围 $MIN_TCP-$MAX_TCP / $MIN_UDP-$MAX_UDP 内没有空闲 $proto 端口"
                 return 1
             }
@@ -1307,12 +1307,12 @@ rename_nodes_prefix(){
 
 tag_family_to_raw(){
     local t="$1" base raw
-    for ((raw=1; raw<=16; raw++)); do
+    for ((raw=1; raw<=${#PROTOCOLS[@]}; raw++)); do
         [ "$(raw_to_tag "$raw")" = "$t" ] && { printf '%s' "$raw"; return 0; }
     done
     base="$(printf '%s' "$t" | sed -E 's/-[0-9]+$//')"
     [ "$base" = "$t" ] && return 1
-    for ((raw=1; raw<=16; raw++)); do
+    for ((raw=1; raw<=${#PROTOCOLS[@]}; raw++)); do
         [ "$(raw_to_tag "$raw")" = "$base" ] && { printf '%s' "$raw"; return 0; }
     done
     return 1
@@ -1414,6 +1414,8 @@ raw_to_node_type(){
         14) echo "http3" ;;
         15) echo "hy2-realm" ;;
         16) echo "shadowtls" ;;
+        17) echo "snell" ;;
+        18) echo "snell-v6" ;;
         *)  echo "" ;;
     esac
 }
@@ -1436,6 +1438,8 @@ raw_to_tag(){
         14) echo "http3" ;;
         15) echo "hysteria2-realm" ;;
         16) echo "shadowtls-v3" ;;
+        17) echo "snell-v5" ;;
+        18) echo "snell-v6" ;;
         *)  echo "" ;;
     esac
 }
@@ -1443,7 +1447,7 @@ raw_to_tag(){
 proto_of_raw(){
     case "$1" in
         2|3|4|14|15) echo "udp" ;;
-        1|5|6|7|8|9|10|11|12|13|16) echo "tcp" ;;
+        1|5|6|7|8|9|10|11|12|13|16|17|18) echo "tcp" ;;
         *)  echo "" ;;
     esac
 }
@@ -1532,6 +1536,44 @@ add_shadowtls(){
       version:3,users:[{password:$pw}],handshake:{server:$h,server_port:443},strict_mode:false
     }')"
     append_inbound "$obj"; add_node "ShadowTLS v3" shadowtls tcp "$p" "" "$pw" "$h" "" "" ""
+}
+add_snell(){
+    if ! version_ge "1.14.0" "$(sb_version)"; then
+        warn "Snell v5 需要 sing-box 1.14.0+（当前 $(sb_version)），无法创建"
+        info "可到「菜单 5 → 内核管理 → 2 升级」切到最新测试版"
+        return 1
+    fi
+    local p pw ob
+    p="$(need_port tcp "$((DEFAULT_TCP_START+11))")" || return 1
+    pw="$(rand_str 16)"
+    ob="http"
+    local obj
+    obj="$(jq -n --arg p "$p" --arg pw "$pw" --arg ob "$ob" '{
+      type:"snell",tag:"snell-v5",listen:"::",listen_port:($p|tonumber),
+      version:5,psk:$pw,obfs_mode:$ob
+    }')"
+    append_inbound "$obj"; add_node "Snell v5" snell tcp "$p" "" "$pw" "" "$ob" "" ""
+}
+add_snell_v6(){
+    if ! version_ge "1.14.0" "$(sb_version)"; then
+        warn "Snell v6 需要 sing-box 1.14.0+（当前 $(sb_version)），无法创建"
+        info "可到「菜单 5 → 内核管理 → 2 升级」切到最新测试版"
+        return 1
+    fi
+    local p pw mode
+    p="$(need_port tcp "$((DEFAULT_TCP_START+12))")" || return 1
+    pw="$(rand_str 16)"
+    ask mode "流量塑形模式（default/unshaped/unsafe-raw）" "default"
+    case "$mode" in
+      default|unshaped|unsafe-raw) : ;;
+      *) warn "未知模式 $mode，回退 default"; mode="default" ;;
+    esac
+    local obj
+    obj="$(jq -n --arg p "$p" --arg pw "$pw" --arg mode "$mode" '{
+      type:"snell",tag:"snell-v6",listen:"::",listen_port:($p|tonumber),
+      version:6,psk:$pw,mode:$mode
+    }')"
+    append_inbound "$obj"; add_node "Snell v6" snell-v6 tcp "$p" "" "$pw" "" "$mode" "" ""
 }
 add_anytls(){
     ensure_cert || { warn "自签证书不可用，跳过本协议"; return 1; }
@@ -2663,6 +2705,12 @@ link_for_node(){
         printf '%s\n' "http://${uuidv}:${pw}@${_adv_ip}:${_adv_port}/?protocol=https&sni=$(urlencode "$sni")&insecure=1${uot_q}#$(urlencode "$name")" ;;
       http3)
         printf '%s\n' "http://${uuidv}:${pw}@${_adv_ip}:${_adv_port}/?protocol=h3&sni=$(urlencode "$sni")&insecure=1#$(urlencode "$name")" ;;
+      snell)
+        local snell_ob="${extra:-http}"
+        printf '%s\n' "snell://${pw}@${_adv_ip}:${_adv_port}?version=4&obfs=$(urlencode "$snell_ob")${uot_q}#$(urlencode "$name")" ;;
+      snell-v6)
+        local snell_mode="${extra:-default}"
+        printf '%s\n' "snell://${pw}@${_adv_ip}:${_adv_port}?version=6&mode=$(urlencode "$snell_mode")${uot_q}#$(urlencode "$name")" ;;
       *)
         return 1 ;;
     esac
@@ -3863,6 +3911,8 @@ clash_node_ok(){
         [ -n "$pw" ] && [ -n "$sni" ] || return 1 ;;
       shadowsocks)
         [ -n "$pw" ] && [ -n "$extra" ] || return 1 ;;
+      snell|snell-v6)
+        [ -n "$pw" ] || return 1 ;;
       *)
         return 1 ;;
     esac
@@ -3918,6 +3968,8 @@ export_clash(){
           shadowtls)     entry="{name: \"${safe_name}\", type: ss, server: \"${_adv_ip}\", port: ${_adv_port}, cipher: 2022-blake3-aes-128-gcm, password: \"${safe_pw}\", plugin: shadow-tls, client-fingerprint: ${fp}, plugin-opts: {host: ${sni}, password: \"${safe_pw}\", version: 3}, ${tls_verify}}" ;;
           naive)         entry="{name: \"${safe_name}\", type: http, server: \"${_adv_ip}\", port: ${_adv_port}, username: ${uuidv}, password: \"${safe_pw}\", tls: true, sni: ${sni}, ${tls_verify}}" ;;
           http2)         entry="{name: \"${safe_name}\", type: http, server: \"${_adv_ip}\", port: ${_adv_port}, username: ${uuidv}, password: \"${safe_pw}\", tls: true, alpn: [h2], sni: ${sni}, ${tls_verify}}" ;;
+          snell)         entry="{name: \"${safe_name}\", type: snell, server: \"${_adv_ip}\", port: ${_adv_port}, psk: \"${safe_pw}\", version: 5, udp: true, obfs-opts: {mode: ${extra:-http}}${uot}}" ;;
+          snell-v6)      entry="{name: \"${safe_name}\", type: snell, server: \"${_adv_ip}\", port: ${_adv_port}, psk: \"${safe_pw}\", version: 6, udp: true, mode: ${extra:-default}${uot}}" ;;
           *)             continue ;;
         esac
         [ -n "$entry" ] || continue
@@ -4244,6 +4296,14 @@ export_singbox_json(){
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" \
               '{type:"anytls",tag:$t,server:$s,server_port:$p,password:$pw,
                 tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)" ;;
+          snell)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg ob "${extra:-http}" \
+              '{type:"snell",tag:$t,server:$s,server_port:$p,version:4,psk:$pw,
+                obfs_mode:$ob,network:"tcp"}' 2>/dev/null)" ;;
+          snell-v6)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg md "${extra:-default}" \
+              '{type:"snell",tag:$t,server:$s,server_port:$p,version:6,psk:$pw,
+                mode:$md,network:"tcp"}' 2>/dev/null)" ;;
           *) ob="" ;;
         esac
         [ -n "$ob" ] && out="${out}${ob}
@@ -5445,6 +5505,8 @@ PROTOCOLS=(
     "HTTP/3"
     "Hysteria2 + Realm"
     "ShadowTLS v3"
+    "Snell v5"
+    "Snell v6"
 )
 PROTO_TRANSPORT=(
     "tcp"
@@ -5462,6 +5524,8 @@ PROTO_TRANSPORT=(
     "tcp"
     "udp"
     "udp"
+    "tcp"
+    "tcp"
     "tcp"
 )
 
@@ -6017,6 +6081,8 @@ node_menu(){
       14) add_http3 || _drc=$? ;;
       15) add_hy2_realm || _drc=$? ;;
       16) add_shadowtls || _drc=$? ;;
+      17) add_snell || _drc=$? ;;
+      18) add_snell_v6 || _drc=$? ;;
       *) warn "无效选项"; pause; continue ;;
     esac
     if [ "$_drc" -ne 0 ]; then
@@ -6088,6 +6154,16 @@ batch_menu(){
             14) if ! version_ge "1.15.0" "$_cur_ver"; then
                     _skip_msg="${_skip_msg}
   ${YELLOW}·${RESET} 14 HTTP/3 需要 sing-box 1.15.0+（当前 ${_cur_ver:-未知}）"
+                    continue
+                fi ;;
+            17) if ! version_ge "1.14.0" "$_cur_ver"; then
+                    _skip_msg="${_skip_msg}
+  ${YELLOW}·${RESET} 17 Snell v5 需要 sing-box 1.14.0+（当前 ${_cur_ver:-未知}）"
+                    continue
+                fi ;;
+            18) if ! version_ge "1.14.0" "$_cur_ver"; then
+                    _skip_msg="${_skip_msg}
+  ${YELLOW}·${RESET} 18 Snell v6 需要 sing-box 1.14.0+（当前 ${_cur_ver:-未知}）"
                     continue
                 fi ;;
         esac
@@ -6215,6 +6291,8 @@ batch_menu(){
         14) add_http3 && _ok=1 ;;
         15) add_hy2_realm && _ok=1 ;;
         16) add_shadowtls && _ok=1 ;;
+        17) add_snell && _ok=1 ;;
+        18) add_snell_v6 && _ok=1 ;;
         *) warn "跳过未知编号：$c" ;;
       esac
       if [ "$_ok" = "1" ]; then
@@ -7643,7 +7721,7 @@ choose_install_channel(){
         [ -n "$_apk_ver" ] && _apk_ok=1
     fi
     echo "  ${BOLD}选择 sing-box 内核${RESET}"
-    echo "    ${BOLD}1.${RESET} 最新版（含 alpha/beta）${GREEN} ← 推荐，16 协议全开、支持 HTTP/3${RESET}"
+    echo "    ${BOLD}1.${RESET} 最新版（含 alpha/beta）${GREEN} ← 推荐，18 协议全开、支持 HTTP/3${RESET}"
     echo "    ${BOLD}2.${RESET} 正式版（stable）${DIM} — 最稳，但用不了 HTTP/3${RESET}"
     if _apk_available; then
         if [ "$_apk_ok" = "1" ]; then
