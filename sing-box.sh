@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.36"
+VERSION="V3.9.37"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -1896,7 +1896,9 @@ add_hy2_realm(){
       users:[{password:$pw}],tls:{enabled:true,server_name:$s,certificate_path:$CRT,key_path:$KEY},
       realm:{server_url:$url,token:$token,realm_id:$rid,stun_servers:["turn.cloudflare.com:3478","stun.nextcloud.com:3478","stun.sip.us:3478","global.stun.twilio.com:3478"]}
     }')"
-    append_inbound "$obj"; add_node "Hysteria2 + Realm" hy2-realm udp "$p" "" "$pw" "$s" "${rid}@${url}" "" ""
+    local realm_extra
+    realm_extra="$(printf '%s\t%s\t%s' "$rid" "$url" "$token")"
+    append_inbound "$obj"; add_node "Hysteria2 + Realm" hy2-realm udp "$p" "" "$pw" "$s" "$realm_extra" "" ""
 }
 
 SB_CHECK_TIMEOUT=20
@@ -3954,8 +3956,8 @@ export_clash(){
         fi
         local entry=""
         case "$type" in
-          vless-reality) entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: tcp, tls: true, udp: true, flow: xtls-rprx-vision, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
-          h2-reality)    entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: http, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
+          vless-reality) entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: tcp, tls: true, udp: true, flow: ${extra:-xtls-rprx-vision}, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
+          h2-reality)    entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: http, tls: true, udp: true, alpn: [h2], servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
           grpc-reality)  entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: grpc, grpc-opts: {grpc-service-name: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, reality-opts: {public-key: ${pub}, short-id: \"${sid}\"}, skip-cert-verify: true${uot}}" ;;
           vless-ws-tls)  entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, ${tls_verify}${uot}}" ;;
           vless-ws-argo) entry="{name: \"${safe_name}\", type: vless, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, network: ws, ws-opts: {path: \"${extra}\"}, tls: true, udp: true, servername: ${sni}, client-fingerprint: ${fp}, skip-cert-verify: true${uot}}" ;;
@@ -3963,7 +3965,8 @@ export_clash(){
           trojan)        entry="{name: \"${safe_name}\", type: trojan, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${safe_pw}\", udp: true, sni: ${sni}, client-fingerprint: ${fp}, ${tls_verify}${uot}}" ;;
           anytls)        entry="{name: \"${safe_name}\", type: anytls, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${safe_pw}\", udp: true, sni: ${sni}, client-fingerprint: ${fp}, ${tls_verify}${uot}}" ;;
           shadowsocks)   entry="{name: \"${safe_name}\", type: ss, server: \"${_adv_ip}\", port: ${_adv_port}, cipher: ${extra}, password: \"${safe_pw}\", udp: true${uot}}" ;;
-          hysteria2|hy2-obfs|hy2-realm) entry="{name: \"${safe_name}\", type: hysteria2, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${safe_pw}\", sni: ${sni}, ${tls_verify}}" ;;
+          hysteria2)     entry="{name: \"${safe_name}\", type: hysteria2, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${safe_pw}\", sni: ${sni}, ${tls_verify}}" ;;
+          hy2-obfs)      entry="{name: \"${safe_name}\", type: hysteria2, server: \"${_adv_ip}\", port: ${_adv_port}, password: \"${safe_pw}\", obfs: salamander, obfs-password: \"${extra}\", sni: ${sni}, ${tls_verify}}" ;;
           tuic)          entry="{name: \"${safe_name}\", type: tuic, server: \"${_adv_ip}\", port: ${_adv_port}, uuid: ${uuidv}, password: \"${safe_pw}\", alpn: [h3], sni: ${sni}, ${tls_verify}}" ;;
           shadowtls)     entry="{name: \"${safe_name}\", type: ss, server: \"${_adv_ip}\", port: ${_adv_port}, cipher: 2022-blake3-aes-128-gcm, password: \"${safe_pw}\", plugin: shadow-tls, client-fingerprint: ${fp}, plugin-opts: {host: ${sni}, password: \"${safe_pw}\", version: 3}, ${tls_verify}}" ;;
           naive)         entry="{name: \"${safe_name}\", type: http, server: \"${_adv_ip}\", port: ${_adv_port}, username: ${uuidv}, password: \"${safe_pw}\", tls: true, sni: ${sni}, ${tls_verify}}" ;;
@@ -4025,6 +4028,11 @@ link_v2rayn_for_node(){
     uuidv="$(jq -r '.uuid // empty' <<<"$row")"; pw="$(jq -r '.password // empty' <<<"$row")"
     sni="$(jq -r '.sni // empty' <<<"$row")";    extra="$(jq -r '.extra // empty' <<<"$row")"
     pub="$(jq -r '.public_key // empty' <<<"$row")"; sid="$(jq -r '.short_id // empty' <<<"$row")"
+    local _adv_ip _adv_port
+    _adv_ip="$(advertise_ip)"; _adv_port="$(advertise_port "$port")"
+    local _argo_dom
+    _argo_dom="$(jq -r '.argo // empty' <<<"$row")"
+    [ -n "$_argo_dom" ] && { _adv_ip="$_argo_dom"; _adv_port=443; }
 
     local _b64=""
     case "$type" in
@@ -4284,9 +4292,30 @@ export_singbox_json(){
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" \
               '{type:"trojan",tag:$t,server:$s,server_port:$p,password:$pw,
                 tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)" ;;
-          hysteria2|hy2-obfs|hy2-realm)
+          hysteria2)
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" \
               '{type:"hysteria2",tag:$t,server:$s,server_port:$p,password:$pw,
+                tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)" ;;
+          hy2-realm)
+            local _rid _rurl _rtok
+            IFS=$'\t' read -r _rid _rurl _rtok <<<"$extra"
+            if [ -z "$_rurl" ] && [[ "$extra" == *@* ]]; then
+              _rid="${extra%%@*}"; _rurl="${extra#*@}"; _rtok="public"
+            fi
+            if [ -n "$_rid" ] && [ -n "$_rurl" ]; then
+              ob="$(jq -nc --arg t "$name" --arg pw "$pw" --arg sn "$sni" --arg url "$_rurl" --arg tok "$_rtok" --arg rid "$_rid" \
+                '{type:"hysteria2",tag:$t,password:$pw,
+                  realm:{server_url:$url,token:$tok,realm_id:$rid,stun_servers:["turn.cloudflare.com:3478","stun.nextcloud.com:3478","stun.sip.us:3478","global.stun.twilio.com:3478"]},
+                  tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)"
+            else
+              ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" \
+                '{type:"hysteria2",tag:$t,server:$s,server_port:$p,password:$pw,
+                  tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)"
+            fi ;;
+          hy2-obfs)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" --arg obfs "$extra" \
+              '{type:"hysteria2",tag:$t,server:$s,server_port:$p,password:$pw,
+                obfs:{type:"salamander",password:$obfs},
                 tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)" ;;
           tuic)
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg pw "$pw" --arg sn "$sni" \
@@ -4304,15 +4333,53 @@ export_singbox_json(){
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg md "${extra:-default}" \
               '{type:"snell",tag:$t,server:$s,server_port:$p,version:6,psk:$pw,
                 mode:$md}' 2>/dev/null)" ;;
+          vmess-ws-tls)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg sn "$sni" --arg pa "$extra" \
+              '{type:"vmess",tag:$t,server:$s,server_port:$p,uuid:$u,
+                tls:{enabled:true,server_name:$sn,insecure:true},
+                transport:{type:"ws",path:$pa,headers:{Host:$sn}}}' 2>/dev/null)" ;;
+          shadowsocks)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg m "$extra" \
+              '{type:"shadowsocks",tag:$t,server:$s,server_port:$p,method:$m,password:$pw}' 2>/dev/null)" ;;
+          shadowtls)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg sn "$sni" \
+              '{type:"shadowtls",tag:$t,server:$s,server_port:$p,version:3,password:$pw,
+                tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)" ;;
+          naive)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg pw "$pw" --arg sn "$sni" \
+              '{type:"naive",tag:$t,server:$s,server_port:$p,username:$u,password:$pw,
+                tls:{enabled:true,server_name:$sn,insecure:true}}' 2>/dev/null)" ;;
+          http2)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg pw "$pw" --arg sn "$sni" \
+              '{type:"http",tag:$t,server:$s,server_port:$p,username:$u,password:$pw,
+                tls:{enabled:true,server_name:$sn,insecure:true,alpn:["h2"]}}' 2>/dev/null)" ;;
+          http3)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg pw "$pw" --arg sn "$sni" \
+              '{type:"http",tag:$t,server:$s,server_port:$p,username:$u,password:$pw,
+                tls:{enabled:true,server_name:$sn,insecure:true,alpn:["h3"]}}' 2>/dev/null)" ;;
+          h2-reality)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg sn "$sni" --arg pb "$pub" --arg sd "$sid" --arg f "${FINGERPRINT:-chrome}" \
+              '{type:"vless",tag:$t,server:$s,server_port:$p,uuid:$u,
+                tls:{enabled:true,server_name:$sn,utls:{enabled:true,fingerprint:$f},
+                     reality:{enabled:true,public_key:$pb,short_id:$sd}},
+                transport:{type:"http",host:[$sn]}}' 2>/dev/null)" ;;
+          grpc-reality)
+            ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg u "$uuidv" --arg sn "$sni" --arg pb "$pub" --arg sd "$sid" --arg f "${FINGERPRINT:-chrome}" --arg sv "$extra" \
+              '{type:"vless",tag:$t,server:$s,server_port:$p,uuid:$u,
+                tls:{enabled:true,server_name:$sn,utls:{enabled:true,fingerprint:$f},
+                     reality:{enabled:true,public_key:$pb,short_id:$sd}},
+                transport:{type:"grpc",service_name:$sv}}' 2>/dev/null)" ;;
           *) ob="" ;;
         esac
         [ -n "$ob" ] && out="${out}${ob}
 "
     done < <(jq -c '.[]' "$NODES" 2>/dev/null)
     { printf '{\n  "outbounds": [\n'
-      printf '%s' "$out" | sed 's/^/    /; s/$/,/' | sed '$ s/,$//'
+      if [ -n "$out" ]; then
+        printf '%s' "$out" | sed 's/^/    /; s/$/,/' | sed '$ s/,$//'
+        printf ',\n'
+      fi
       cat <<'SBJSON'
-    ,
     { "type": "direct", "tag": "direct" },
     { "type": "block", "tag": "block" }
   ],
@@ -8526,9 +8593,13 @@ check_update(){
                 pause; return 1
             fi
             if write_self_menu "$tmp"; then
+                rm -f "$tmp"
                 ok "已更新到 ${rver}"
-                info "退出本菜单后重新运行 sb 即生效"
+                info "正在用新版本重启菜单，请稍候…"
+                sleep 1
+                exec bash "$MENU"
             else
+                rm -f "$tmp"
                 warn "写入 menu.sh 失败"
             fi
             ;;
