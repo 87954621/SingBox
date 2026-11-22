@@ -2,7 +2,7 @@
 
 一个脚本，在你的服务器上一键搭好代理，自带中文菜单。支持 18 种协议、订阅链接、Argo 内网穿透，**没有公网端口的 NAT 小鸡也能用**。
 
-**V3.9.37**
+**V3.9.38**
 
 支持 Debian / Ubuntu / CentOS / Alpine / Arch，systemd / OpenRC / 无 init 都能跑。
 

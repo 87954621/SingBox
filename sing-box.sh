@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.37"
+VERSION="V3.9.38"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -995,7 +995,25 @@ uuid(){
             "${h:0:8}" "${h:8:4}" "${h:13:3}" "${h:17:3}" "${h:20:12}"
     fi
 }
-rand_hex(){ openssl rand -hex "${1:-8}"; }
+rand_hex(){
+    local n="${1:-8}" h=""
+    h="$(openssl rand -hex "$n" 2>/dev/null)" || h=""
+    [ -n "$h" ] && { printf '%s' "$h"; return 0; }
+    if [ -r /dev/urandom ]; then
+        h="$(LC_ALL=C od -An -tx1 -N "$n" /dev/urandom 2>/dev/null | tr -d ' \n')" || h=""
+        [ -n "$h" ] && { printf '%s' "$h"; return 0; }
+    fi
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+        local want=$((n*2)) guard=0
+        while [ ${#h} -lt "$want" ] && [ "$guard" -lt 16 ]; do
+            h="${h}$(tr -d '-' </proc/sys/kernel/random/uuid 2>/dev/null)"
+            guard=$((guard+1))
+        done
+        h="${h:0:$want}"
+        [ -n "$h" ] && { printf '%s' "$h"; return 0; }
+    fi
+    return 1
+}
 rand_str(){ rand_hex "${1:-8}"; }
 ensure_cert(){
     if [ ! -s "$CERTDIR/server.crt" ] || [ ! -s "$CERTDIR/server.key" ]; then
@@ -1545,7 +1563,9 @@ add_snell(){
     fi
     local p pw ob
     p="$(need_port tcp "$((DEFAULT_TCP_START+11))")" || return 1
-    pw="$(rand_str 16)"
+    if ! pw="$(rand_str 16)" || [ -z "$pw" ]; then
+        warn "Snell v5 密钥生成失败，本次不创建（避免写入空密码）"; return 1
+    fi
     ob="http"
     local obj
     obj="$(jq -n --arg p "$p" --arg pw "$pw" --arg ob "$ob" '{
@@ -1562,7 +1582,9 @@ add_snell_v6(){
     fi
     local p pw mode
     p="$(need_port tcp "$((DEFAULT_TCP_START+12))")" || return 1
-    pw="$(rand_str 16)"
+    if ! pw="$(rand_str 16)" || [ -z "$pw" ]; then
+        warn "Snell v6 密钥生成失败，本次不创建（避免写入空密码）"; return 1
+    fi
     ask mode "流量塑形模式（default/unshaped/unsafe-raw）" "default"
     case "$mode" in
       default|unshaped|unsafe-raw) : ;;
@@ -4195,6 +4217,9 @@ show_nodes(){
             http2|http3|naive)                                                    uid_label="用户名" ;;
         esac
         [ -n "$uuidpw" ] && kvf 6 "$uid_label" "$uuidpw"
+        if [ -z "$uuidpw" ]; then
+            printf '      %s⚠ 该节点无密钥/UUID，无法使用；请在「节点管理」删除后重新部署%s\n' "$RED" "$RESET"
+        fi
         [ -n "$pw" ] && [ -n "$(jq -r '.uuid // empty' <<<"$row")" ] && kvf 6 "密码" "$pw"
         [ -n "$sni" ]    && kvf 6 "SNI" "$sni"
         [ -n "$extra" ]  && kvf 6 "额外" "$extra"
