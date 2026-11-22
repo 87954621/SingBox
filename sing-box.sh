@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.35"
+VERSION="V3.9.36"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -4299,11 +4299,11 @@ export_singbox_json(){
           snell)
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg ob "${extra:-http}" \
               '{type:"snell",tag:$t,server:$s,server_port:$p,version:4,psk:$pw,
-                obfs_mode:$ob,network:"tcp"}' 2>/dev/null)" ;;
+                obfs_mode:$ob}' 2>/dev/null)" ;;
           snell-v6)
             ob="$(jq -nc --arg t "$name" --arg s "$_adv_ip" --argjson p "$_adv_port" --arg pw "$pw" --arg md "${extra:-default}" \
               '{type:"snell",tag:$t,server:$s,server_port:$p,version:6,psk:$pw,
-                mode:$md,network:"tcp"}' 2>/dev/null)" ;;
+                mode:$md}' 2>/dev/null)" ;;
           *) ob="" ;;
         esac
         [ -n "$ob" ] && out="${out}${ob}
