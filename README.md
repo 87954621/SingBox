@@ -6,6 +6,24 @@
 
 支持 Debian / Ubuntu / CentOS / Alpine / Arch，systemd / OpenRC / 无 init 都能跑。
 
+## 支持的协议
+
+共 18 种，部署时按菜单里的编号选：
+
+| 编号 | 协议 | 编号 | 协议 |
+|---:|---|---:|---|
+| 1 | VLESS + Reality | 10 | VLESS + gRPC + Reality |
+| 2 | Hysteria2 | 11 | AnyTLS |
+| 3 | Hysteria2 + Salamander | 12 | NaiveProxy |
+| 4 | TUIC v5 | 13 | HTTP/2 |
+| 5 | Shadowsocks 2022 | 14 | HTTP/3 |
+| 6 | Trojan + TLS | 15 | Hysteria2 + Realm |
+| 7 | VMess + WS + TLS | 16 | ShadowTLS v3 |
+| 8 | VLESS + WS + TLS | 17 | Snell v5 |
+| 9 | VLESS + H2 + Reality | 18 | Snell v6 |
+
+> HTTP/3、NaiveProxy 要较新内核（装内核时选 `1`）；Snell 要客户端支持（sing-box / mihomo 可以）。
+
 ---
 
 ## 一分钟安装

@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.34"
+VERSION="V3.9.35"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -7466,6 +7466,7 @@ menu(){
     echo
     printf '  %s%2d.%s %s\n' "$BOLD" 8 "$RESET" "系统与自检"
     printf '  %s%2d.%s %s\n' "$BOLD" 9 "$RESET" "完全卸载（内核 + 配置 + 节点 + 本脚本）"
+    printf '  %s%2d.%s %s\n' "$BOLD" 10 "$RESET" "脚本升级（检查并更新管理器）"
     echo
     printf '  %s%2d.%s %s\n' "$BOLD" "0" "$RESET" "退出"
     echo
@@ -7482,12 +7483,13 @@ menu(){
       7) argo_menu ;;
       8) system_hub_menu ;;
       9) uninstall ;;
+      10) clear; check_update ;;
       0) exit 0 ;;
       r|R) apply; pause ;;
       e|E) clear; export_all; ok "已导出到 ${SUBDIR}"; pause ;;
       s|S) clear; status; pause ;;
       v|V) clear; sb_version_detail; pause ;;
-      *) warn "无效选项：请输入 0-9 的编号，或快捷键 r/e/s/v"; sleep 1 ;;
+      *) warn "无效选项：请输入 0-10 的编号，或快捷键 r/e/s/v"; sleep 1 ;;
     esac
   done
 }
