@@ -85,7 +85,7 @@ DEFAULT_NEWEST_VERSION="1.15.0-alpha.9"
 SINGBOX_WANT_VERSION=""
 
 APP="singbox-nat"
-VERSION="V3.9.38"
+VERSION="V3.9.39"
 BASE="/usr/local/share/${APP}"
 BIN="/usr/local/bin/sing-box"
 SB="/usr/local/bin/sb"
@@ -2731,10 +2731,10 @@ link_for_node(){
         printf '%s\n' "http://${uuidv}:${pw}@${_adv_ip}:${_adv_port}/?protocol=h3&sni=$(urlencode "$sni")&insecure=1#$(urlencode "$name")" ;;
       snell)
         local snell_ob="${extra:-http}"
-        printf '%s\n' "snell://${pw}@${_adv_ip}:${_adv_port}?version=4&obfs=$(urlencode "$snell_ob")${uot_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "snell://${pw}@${_adv_ip}:${_adv_port}?version=4&psk=$(urlencode "$pw")&obfs=$(urlencode "$snell_ob")${uot_q}#$(urlencode "$name")" ;;
       snell-v6)
         local snell_mode="${extra:-default}"
-        printf '%s\n' "snell://${pw}@${_adv_ip}:${_adv_port}?version=6&mode=$(urlencode "$snell_mode")${uot_q}#$(urlencode "$name")" ;;
+        printf '%s\n' "snell://${pw}@${_adv_ip}:${_adv_port}?version=6&psk=$(urlencode "$pw")&mode=$(urlencode "$snell_mode")${uot_q}#$(urlencode "$name")" ;;
       *)
         return 1 ;;
     esac
